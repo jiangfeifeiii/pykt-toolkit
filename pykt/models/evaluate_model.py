@@ -64,10 +64,10 @@ def evaluate(model, test_loader, model_name, rel=None, save_path=""):
                 qshft, cshft, rshft, sdshft,qdshft = dcur["shft_qseqs"], dcur["shft_cseqs"], dcur["shft_rseqs"], dcur["shft_sdseqs"],dcur["shft_qdseqs"]
                 sd, qd, sdshft, qdshft = sd.to(device), qd.to(device), sdshft.to(device), qdshft.to(device)
             else:
-                q, c, r = dcur["qseqs"], dcur["cseqs"], dcur["rseqs"] 
-                qshft, cshft, rshft= dcur["shft_qseqs"], dcur["shft_cseqs"], dcur["shft_rseqs"]
+                q, c, r, s = dcur["qseqs"], dcur["cseqs"], dcur["rseqs"], dcur["sseqs"] 
+                qshft, cshft, rshft, sshft= dcur["shft_qseqs"], dcur["shft_cseqs"], dcur["shft_rseqs"], dcur["shft_sseqs"]
             m, sm = dcur["masks"], dcur["smasks"]
-            q, c, r, qshft, cshft, rshft, m, sm = q.to(device), c.to(device), r.to(device), qshft.to(device), cshft.to(device), rshft.to(device), m.to(device), sm.to(device)
+            q, c, r, s, qshft, cshft, rshft, sshft, m, sm = q.to(device), c.to(device), r.to(device), s.to(device), qshft.to(device), cshft.to(device), rshft.to(device), sshft.to(device), m.to(device), sm.to(device) 
             if model.model_name in que_type_models and model_name not in ["lpkt", "rkt", "promptkt", "unikt"]:
                 model.model.eval()
             else:
@@ -101,7 +101,7 @@ def evaluate(model, test_loader, model_name, rel=None, save_path=""):
             elif model_name in ["rekt"]:
                 y = model(dcur)
             elif model_name in ["dkt", "dkt+"]:
-                y = model(c.long(), r.long())
+                y = model(c.long(), r.long(), s.long())
                 y = (y * one_hot(cshft.long(), model.num_c)).sum(-1)
             elif model_name in ["dkt_forget"]:
                 y = model(c.long(), r.long(), dgaps)

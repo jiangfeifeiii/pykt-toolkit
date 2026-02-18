@@ -1,6 +1,9 @@
 #!/usr/bin/env python
 # coding=utf-8
 
+from typing import Any
+
+
 import os, sys
 import pandas as pd
 import torch
@@ -77,6 +80,8 @@ class KTDataset(Dataset):
             - **mask_seqs (torch.tensor)**: masked value sequence, shape is seqlen-1
             - **select_masks (torch.tensor)**: is select to calculate the performance or not, 0 is not selected, 1 is selected, only available for 1~seqlen-1, shape is seqlen-1
             - **dcur (dict)**: used only self.qtest is True, for question level evaluation
+            - **s_seqs (torch.tensor)**:
+            - **sshft_seqs (torch.tensors)**:
         """
         dcur = dict()
         mseqs = self.dori["masks"][index]
@@ -117,8 +122,9 @@ class KTDataset(Dataset):
             - **mask_seqs (torch.tensor)**: masked value sequence, shape is seqlen-1
             - **select_masks (torch.tensor)**: is select to calculate the performance or not, 0 is not selected, 1 is selected, only available for 1~seqlen-1, shape is seqlen-1
             - **dqtest (dict)**: not null only self.qtest is True, for question level evaluation
+            - **s_seqs (torch.tensor)**: submission id
         """
-        dori = {"qseqs": [], "cseqs": [], "rseqs": [], "tseqs": [], "utseqs": [], "smasks": []}
+        dori = {"qseqs": [], "cseqs": [], "rseqs": [], "sseqs":[], "tseqs": [], "utseqs": [], "smasks": []}
 
         # seq_qids, seq_cids, seq_rights, seq_mask = [], [], [], []
         df = pd.read_csv(sequence_path)#[0:1000]
@@ -137,8 +143,8 @@ class KTDataset(Dataset):
             if "usetimes" in row:
                 dori["utseqs"].append([int(_) for _ in row["usetimes"].split(",")])
             #embedding index todo
-            #可以参考sub index表
-
+            if "submissions" in row:
+                dori["sseqs"].append([int(_) for _ in row["submissions"].split(",")])
             #====================
                 
             dori["rseqs"].append([int(_) for _ in row["responses"].split(",")])

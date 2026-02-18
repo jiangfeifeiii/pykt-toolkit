@@ -91,10 +91,9 @@ def model_forward(model, data, rel=None):
         q, c, r, t,sd,qd = dcur["qseqs"].to(device), dcur["cseqs"].to(device), dcur["rseqs"].to(device), dcur["tseqs"].to(device),dcur["sdseqs"].to(device),dcur["qdseqs"].to(device)
         qshft, cshft, rshft, tshft,sdshft,qdshft = dcur["shft_qseqs"].to(device), dcur["shft_cseqs"].to(device), dcur["shft_rseqs"].to(device), dcur["shft_tseqs"].to(device),dcur["shft_sdseqs"].to(device),dcur["shft_qdseqs"].to(device)
     else:
-        q, c, r, t = dcur["qseqs"].to(device), dcur["cseqs"].to(device), dcur["rseqs"].to(device), dcur["tseqs"].to(device)
-        qshft, cshft, rshft, tshft = dcur["shft_qseqs"].to(device), dcur["shft_cseqs"].to(device), dcur["shft_rseqs"].to(device), dcur["shft_tseqs"].to(device)
+        q, c, r, t, s = dcur["qseqs"].to(device), dcur["cseqs"].to(device), dcur["rseqs"].to(device), dcur["tseqs"].to(device), dcur["sseqs"].to(device)
+        qshft, cshft, rshft, tshft, sshft = dcur["shft_qseqs"].to(device), dcur["shft_cseqs"].to(device), dcur["shft_rseqs"].to(device), dcur["shft_tseqs"].to(device), dcur["shft_sseqs"].to(device)
     m, sm = dcur["masks"].to(device), dcur["smasks"].to(device)
-
     ys, preloss = [], []
     cq = torch.cat((q[:,0:1], qshft), dim=1)
     cc = torch.cat((c[:,0:1], cshft), dim=1)
@@ -196,7 +195,7 @@ def model_forward(model, data, rel=None):
         # cat = torch.cat((d["at_seqs"][:,0:1], dshft["at_seqs"]), dim=1)
         cit = torch.cat((dcur["itseqs"][:,0:1], dcur["shft_itseqs"]), dim=1)
     if model_name in ["dkt"]:
-        y = model(c.long(), r.long())
+        y = model(c.long(), r.long(), s.long())
         y = (y * one_hot(cshft.long(), model.num_c)).sum(-1)
         ys.append(y) # first: yshft
     elif model_name == "dkt+":
@@ -283,6 +282,7 @@ def train_model(model, train_loader, valid_loader, num_epochs, opt, ckpt_path, t
     for i in range(1, num_epochs + 1):
         loss_mean = []
         for data in train_loader:
+            
             train_step+=1
             if model.model_name in que_type_models and model.model_name not in ["lpkt", "rkt"]:
                 model.model.train()

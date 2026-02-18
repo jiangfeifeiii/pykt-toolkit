@@ -239,4 +239,5 @@ def init_dataset4train(dataset_name, model_name, data_config, i, batch_size, dif
     # test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
     # # test_window_loader = DataLoader(test_window_dataset, batch_size=batch_size, shuffle=False)
     # test_window_loader = None
+    print("hello")
     return train_loader, valid_loader#, test_loader, test_window_loader
