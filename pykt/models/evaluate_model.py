@@ -77,6 +77,7 @@ def evaluate(model, test_loader, model_name, rel=None, save_path=""):
             cq = torch.cat((q[:,0:1], qshft), dim=1)
             cc = torch.cat((c[:,0:1], cshft), dim=1)
             cr = torch.cat((r[:,0:1], rshft), dim=1)
+            cs = torch.cat((s[:,0:1], sshft), dim=1)
             if model_name in ["atdkt"]:
                 '''
                 y = model(dcur) 
@@ -107,7 +108,7 @@ def evaluate(model, test_loader, model_name, rel=None, save_path=""):
                 y = model(c.long(), r.long(), dgaps)
                 y = (y * one_hot(cshft.long(), model.num_c)).sum(-1)
             elif model_name in ["dkvmn","deep_irt", "skvmn","deep_irt"]:
-                y = model(cc.long(), cr.long())
+                y = model(cc.long(), cr.long(), cs.long())
                 y = y[:,1:]
             elif model_name in ["kqn", "sakt"]:
                 y = model(c.long(), r.long(), cshft.long())

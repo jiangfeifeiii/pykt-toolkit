@@ -14,11 +14,34 @@ class DKVMN(Module):
         self.dim_s = dim_s
         self.size_m = size_m
         self.emb_type = emb_type
+        
+        self.emb_path = emb_path
 
         if emb_type.startswith("qid"):
             self.k_emb_layer = Embedding(self.num_c, self.dim_s)
             self.Mk = Parameter(torch.Tensor(self.size_m, self.dim_s))
             self.Mv0 = Parameter(torch.Tensor(self.size_m, self.dim_s))
+
+        if self.emb_path:
+            pretrained_weight = np.load(self.emb_path)
+            pretrained_weight = torch.from_numpy(pretrained_weight).float()
+            actual_dim = pretrained_weight.shape[1]
+
+            self.pretrained_emb = Embedding.from_pretrained(
+                pretrained_weight, freeze=True
+            )
+
+            self.emb_projection = torch.nn.Sequential(
+                Linear(actual_dim, self.dim_s),
+                torch.nn.ReLU(),
+                Dropout(dropout)
+            )
+
+            self.gate_layer = torch.nn.Sequential(
+                Linear(self.dim_s * 2, self.dim_s),
+                torch.nn.ReLU(),
+                Linear(self.dim_s, self.dim_s)
+            )
 
         kaiming_normal_(self.Mk)
         kaiming_normal_(self.Mv0)
@@ -32,13 +55,24 @@ class DKVMN(Module):
         self.e_layer = Linear(self.dim_s, self.dim_s)
         self.a_layer = Linear(self.dim_s, self.dim_s)
 
-    def forward(self, q, r, qtest=False):
+    def forward(self, q, r, s=None, qtest=False):
         emb_type = self.emb_type
         batch_size = q.shape[0]
         if emb_type == "qid":
             x = q + self.num_c * r
             k = self.k_emb_layer(q)
             v = self.v_emb_layer(x)
+
+            if self.emb_path:
+                if s is None:
+                    raise ValueError("模型初始化了 emb_path,但在 forward 时未提供 sub_id")
+                code_emb = self.pretrained_emb(s)
+                code_features = self.emb_projection(code_emb)
+
+                combined = torch.cat([v, code_features], dim=-1)
+                gate = torch.sigmoid(self.gate_layer(combined))
+
+                v = (1-gate)*v + gate * code_features
         
         Mvt = self.Mv0.unsqueeze(0).repeat(batch_size, 1, 1)
 
