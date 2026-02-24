@@ -42,6 +42,8 @@ class DKVMN(Module):
                 torch.nn.ReLU(),
                 Linear(self.dim_s, self.dim_s)
             )
+        else:
+            print("emb_path==\"\"")
 
         kaiming_normal_(self.Mk)
         kaiming_normal_(self.Mv0)

@@ -35,6 +35,9 @@ class AKT(nn.Module):
         self.model_type = self.model_name
         self.separate_qa = separate_qa
         self.emb_type = emb_type
+
+        self.emb_path = emb_path
+
         embed_l = d_model
         if self.n_pid > 0:
             self.difficult_param = nn.Embedding(self.n_pid+1, 1) # 题目难度
@@ -48,6 +51,28 @@ class AKT(nn.Module):
                 self.qa_embed = nn.Embedding(2*self.n_question+1, embed_l) # interaction emb
             else: # false default
                 self.qa_embed = nn.Embedding(2, embed_l)
+        
+        if self.emb_path:
+            pretrained_weight = np.load(self.emb_path)
+            pretrained_weight = torch.from_numpy(pretrained_weight).float()
+            actual_dim = pretrained_weight.shape[1]
+
+            self.pretrained_emb = nn.Embedding.from_pretrained(
+                pretrained_weight, freeze=True
+            )
+
+            self.emb_projection = torch.nn.Sequential(
+                nn.Linear(actual_dim, d_model),
+                torch.nn.ReLU(),
+                nn.Dropout(dropout)
+            )
+
+            self.gate_layer = torch.nn.Sequential(
+                nn.Linear(d_model * 2, d_model),
+                torch.nn.ReLU(),
+            )
+        else:
+            print("emb_path==\"\"")
 
         # Architecture Object. It contains stack of attention block
         self.model = Architecture(n_question=n_question, n_blocks=n_blocks, n_heads=num_attn_heads, dropout=dropout,
@@ -77,7 +102,7 @@ class AKT(nn.Module):
             qa_embed_data = self.qa_embed(target)+q_embed_data
         return q_embed_data, qa_embed_data
 
-    def forward(self, q_data, target, pid_data=None, qtest=False):
+    def forward(self, q_data, target, s=None, pid_data=None, qtest=False):
         emb_type = self.emb_type
         # Batch First
         if emb_type.startswith("qid"):
@@ -101,6 +126,17 @@ class AKT(nn.Module):
             c_reg_loss = (pid_embed_data ** 2.).sum() * self.l2 # rasch部分loss
         else:
             c_reg_loss = 0.
+
+        if self.emb_path:
+            if s is None:
+                raise ValueError("模型初始化了 emb_path,但在 forward 时未提供 sub_id")
+            code_emb = self.pretrained_emb(s)
+            code_features = self.emb_projection(code_emb)
+
+            combined = torch.cat([qa_embed_data, code_features], dim=-1)
+            gate = torch.sigmoid(self.gate_layer(combined))
+            
+            qa_embed_data = (1-gate)*qa_embed_data + gate * code_features
 
         # BS.seqlen,d_model
         # Pass to the decoder
