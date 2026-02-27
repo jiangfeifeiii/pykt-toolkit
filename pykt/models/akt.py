@@ -16,7 +16,7 @@ class Dim(IntEnum):
 
 class AKT(nn.Module):
     def __init__(self, n_question, n_pid, d_model, n_blocks, dropout, d_ff=256, 
-            kq_same=1, final_fc_dim=512, num_attn_heads=8, separate_qa=False, l2=1e-5, emb_type="qid", emb_path="", pretrain_dim=768):
+            kq_same=1, final_fc_dim=512, num_attn_heads=8, separate_qa=False, l2=1e-5, emb_type="qid", ta_emb_path="", ks_emb_path="", pretrain_dim=768):
         super().__init__()
         """
         Input:
@@ -36,7 +36,8 @@ class AKT(nn.Module):
         self.separate_qa = separate_qa
         self.emb_type = emb_type
 
-        self.emb_path = emb_path
+        self.ta_emb_path = ta_emb_path
+        self.ks_emb_path = ks_emb_path
 
         embed_l = d_model
         if self.n_pid > 0:
@@ -51,29 +52,32 @@ class AKT(nn.Module):
                 self.qa_embed = nn.Embedding(2*self.n_question+1, embed_l) # interaction emb
             else: # false default
                 self.qa_embed = nn.Embedding(2, embed_l)
-        
-        if self.emb_path:
-            pretrained_weight = np.load(self.emb_path)
-            pretrained_weight = torch.from_numpy(pretrained_weight).float()
-            actual_dim = pretrained_weight.shape[1]
+        if self.ta_emb_path:
+            ta_weight = np.load(self.ta_emb_path)
+            ta_weight = torch.from_numpy(ta_weight).float()
+            self.ta_dim = ta_weight.shape[1]
 
-            self.pretrained_emb = nn.Embedding.from_pretrained(
-                pretrained_weight, freeze=True
+            self.ta_emb = nn.Embedding.from_pretrained(
+                ta_weight, freeze=True
             )
-
-            self.emb_projection = torch.nn.Sequential(
-                nn.Linear(actual_dim, d_model),
-                torch.nn.ReLU(),
-                nn.Dropout(dropout)
-            )
-
-            self.gate_layer = torch.nn.Sequential(
-                nn.Linear(d_model * 2, d_model),
+            self.x_fusion_mlp = torch.nn.Sequential(
+                nn.Linear(embed_l+self.ta_dim, embed_l),
                 torch.nn.ReLU(),
             )
-        else:
-            print("emb_path==\"\"")
 
+
+        if self.ks_emb_path:
+            ks_weight = np.load(self.ks_emb_path)
+            ks_weight = torch.from_numpy(ks_weight).float()
+            self.ks_dim = ks_weight.shape[1]
+
+            self.ks_emb = nn.Embedding.from_pretrained(
+                ks_weight, freeze=True
+            )
+            self.h_fusion_mlp = torch.nn.Sequential(
+                nn.Linear(embed_l+self.ks_dim, embed_l),
+                torch.nn.Tanh(),
+            )
         # Architecture Object. It contains stack of attention block
         self.model = Architecture(n_question=n_question, n_blocks=n_blocks, n_heads=num_attn_heads, dropout=dropout,
                                     d_model=d_model, d_feature=d_model / num_attn_heads, d_ff=d_ff,  kq_same=self.kq_same, model_type=self.model_type, emb_type=self.emb_type)
@@ -86,7 +90,7 @@ class AKT(nn.Module):
             nn.Linear(256, 1)
         )
         self.reset()
-
+        self.layer_norm = torch.nn.LayerNorm(d_model)
     def reset(self):
         for p in self.parameters():
             if p.size(0) == self.n_pid+1 and self.n_pid > 0:
@@ -107,6 +111,12 @@ class AKT(nn.Module):
         # Batch First
         if emb_type.startswith("qid"):
             q_embed_data, qa_embed_data = self.base_emb(q_data, target)
+            if self.ta_emb_path:
+                if s is None:
+                    raise ValueError("模型初始化了 emb_path,但在 forward 时未提供 sub_id")
+                ta_emb = self.ta_emb(s)
+                combined = torch.cat([qa_embed_data, ta_emb], dim=-1)
+                qa_embed_data = qa_embed_data + self.x_fusion_mlp(combined)
 
         pid_embed_data = None
         if self.n_pid > 0: # have problem id
@@ -127,21 +137,18 @@ class AKT(nn.Module):
         else:
             c_reg_loss = 0.
 
-        if self.emb_path:
-            if s is None:
-                raise ValueError("模型初始化了 emb_path,但在 forward 时未提供 sub_id")
-            code_emb = self.pretrained_emb(s)
-            code_features = self.emb_projection(code_emb)
-
-            combined = torch.cat([qa_embed_data, code_features], dim=-1)
-            gate = torch.sigmoid(self.gate_layer(combined))
-            
-            qa_embed_data = (1-gate)*qa_embed_data + gate * code_features
-
         # BS.seqlen,d_model
         # Pass to the decoder
         # output shape BS,seqlen,d_model or d_model//2
         d_output = self.model(q_embed_data, qa_embed_data, pid_embed_data)
+
+        if self.ks_emb_path:
+            if s is None:
+                raise ValueError("模型初始化了 emb_path,但在 forward 时未提供 sub_id")
+            ks_emb = self.ks_emb(s)
+            combined = torch.cat([d_output, ks_emb], dim=-1)
+            d_output = d_output + self.h_fusion_mlp(combined)
+            # d_output = self.layer_norm(d_output)
 
         concat_q = torch.cat([d_output, q_embed_data], dim=-1)
         output = self.out(concat_q).squeeze(-1)

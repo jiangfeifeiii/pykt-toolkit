@@ -6,32 +6,47 @@ import torch
 from torch.nn import Module, Embedding, LSTM, Linear, Dropout, Sequential, ReLU
 
 class DKT(Module):
-    def __init__(self, num_c, emb_size, dropout=0.1, emb_type='qid', emb_path="", pretrain_dim=768):
+    def __init__(self, num_c, emb_size, dropout=0.1, emb_type='qid', ta_emb_path="", ks_emb_path="", pretrain_dim=768):
         super().__init__()
         self.model_name = "dkt"
         self.num_c = num_c
         self.emb_size = emb_size
         self.hidden_size = emb_size
         self.emb_type = emb_type
-        self.emb_path = emb_path
+
+        self.ta_emb_path = ta_emb_path
+        self.ks_emb_path = ks_emb_path
 
         if emb_type.startswith("qid"):
             self.interaction_emb = Embedding(self.num_c * 2, self.emb_size)
 
         lstm_input_dim = self.emb_size
-        if self.emb_path:
-            pretrained_weight = np.load(self.emb_path)
-            pretrained_weight = torch.from_numpy(pretrained_weight).float()
-            actual_pretrained_dim = pretrained_weight.shape[1]
-            self.pretrained_emb = Embedding.from_pretrained(pretrained_weight,freeze=True)
-            self.emb_projection = Sequential(
-                Linear(actual_pretrained_dim, self.emb_size),
-                ReLU(),
-                Dropout(dropout)
+        if self.ta_emb_path:
+            ta_weight = np.load(self.ta_emb_path)
+            ta_weight = torch.from_numpy(ta_weight).float()
+            self.ta_dim = ta_weight.shape[1]
+
+            self.ta_emb = Embedding.from_pretrained(
+                ta_weight, freeze=True
             )
-            self.gate_layer = Linear(self.emb_size * 2, self.emb_size)
-        else:
-            print("emb_path==\"\"")
+            self.x_fusion_mlp = torch.nn.Sequential(
+                Linear(self.emb_size+self.ta_dim, self.emb_size),
+                torch.nn.ReLU(),
+            )
+
+
+        if self.ks_emb_path:
+            ks_weight = np.load(self.ks_emb_path)
+            ks_weight = torch.from_numpy(ks_weight).float()
+            self.ks_dim = ks_weight.shape[1]
+
+            self.ks_emb = Embedding.from_pretrained(
+                ks_weight, freeze=True
+            )
+            self.h_fusion_mlp = torch.nn.Sequential(
+                Linear(self.hidden_size+self.ks_dim, self.hidden_size),
+                torch.nn.ReLU(),
+            )
 
         self.lstm_layer = LSTM(lstm_input_dim, self.hidden_size, batch_first=True)
         self.dropout_layer = Dropout(dropout)
@@ -45,21 +60,24 @@ class DKT(Module):
             x = q + self.num_c * r
             xemb = self.interaction_emb(x)
         # print(f"xemb.shape is {xemb.shape}")
-        if self.emb_path:
-            if s is None:
-                raise ValueError("模型初始化了 emb_path,但在 forward 时未提供 sub_id")
-            code_emb = self.pretrained_emb(s)
-            code_features = self.emb_projection(code_emb)
-
-            combined = torch.cat([xemb, code_features], dim=-1)
-            gate = torch.sigmoid(self.gate_layer(combined))
-            
-            # 融合：原特征 + (门控 * 代码特征)
-            # 这里的 gate 实现了“逐元素”的筛选
-            xemb = xemb + gate * code_features
+            if self.ta_emb_path:
+                if s is None:
+                    raise ValueError("模型初始化了 emb_path,但在 forward 时未提供 sub_id")
+                ta_emb = self.ta_emb(s)
+                combined = torch.cat([xemb, ta_emb], dim=-1)
+                # xemb = xemb + self.x_fusion_mlp(combined)
+                xemb = self.x_fusion_mlp(combined)
 
         h, _ = self.lstm_layer(xemb)
         h = self.dropout_layer(h)
+        if self.ks_emb_path:
+            if s is None:
+                raise ValueError("模型初始化了 emb_path,但在 forward 时未提供 sub_id")
+            ks_emb = self.ks_emb(s)
+            combined = torch.cat([h, ks_emb], dim=-1)
+            # h = h+ self.h_fusion_mlp(combined)
+            h = self.h_fusion_mlp(combined)
+        
         y = self.out_layer(h)
         y = torch.sigmoid(y)
 

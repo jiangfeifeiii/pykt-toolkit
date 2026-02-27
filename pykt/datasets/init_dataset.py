@@ -15,9 +15,10 @@ from .que_data_loader_promptkt import KTQueDataset_promptKT
 from .pretrain_utils import get_pretrain_data
 
 
-def init_test_datasets(data_config, model_name, batch_size, diff_level=None, args=None, re_mapping=False):
-    dataset_name = data_config["dataset_name"]
+def init_test_datasets(dataset_name, model_name, data_config, batch_size, diff_level=None, args=None, re_mapping=False):
+    # dataset_name = data_config["dataset_name"]
     print(f"model_name is {model_name}, dataset_name is {dataset_name}")
+    data_config = data_config[dataset_name]
     test_question_loader, test_question_window_loader = None, None
     if model_name in ["dkt_forget", "bakt_time"]:
         test_dataset = DktForgetDataset(os.path.join(data_config["dpath"], data_config["test_file"]), data_config["input_type"], {-1})
