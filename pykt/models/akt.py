@@ -6,7 +6,7 @@ import math
 import torch.nn.functional as F
 from enum import IntEnum
 import numpy as np
-
+print("cross_attn")
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 class Dim(IntEnum):
