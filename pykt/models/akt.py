@@ -6,32 +6,15 @@ import math
 import torch.nn.functional as F
 from enum import IntEnum
 import numpy as np
-print("cross_attn")
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 class Dim(IntEnum):
     batch = 0
     seq = 1
     feature = 2
-class ProjectionHead(nn.Module):
-    """
-    将 h 映射到对比空间 Z
-    Input:  (B, T, d_model)
-    Output: (B, T, proj_dim)
-    """
-    def __init__(self, input_dim, proj_dim=128):
-        super().__init__()
-        self.proj = nn.Sequential(
-            nn.Linear(input_dim, input_dim),
-            nn.ReLU(),
-            nn.Linear(input_dim, proj_dim)
-        )
 
-    def forward(self, h):
-        # h: (B, T, d_model)
-        z = self.proj(h)
-        z = F.normalize(z, dim=-1)  # 归一化用于 InfoNCE
-        return z
+    
 class AttnBranch(nn.Module):
     """
     微观行为编码器
@@ -57,271 +40,7 @@ class AttnBranch(nn.Module):
         qa_embed_data = self.fusion(torch.cat([q_embed_data, r_embed_data, ta_embed_data], dim=-1))
         h_t1 = self.attn(q_embed_data, qa_embed_data, pid_embed_data)    # (B, T, d_model)
         return h_t1
-class GRUBranch(nn.Module):
-    """
-    纯认知状态编码器
-    """
-    def __init__(self, llm_dim=768, d_model=256, num_layers= 1):
-        super().__init__()
 
-        self.proj = nn.Linear(llm_dim, d_model)
-
-        self.gru = nn.GRU(
-            input_size=d_model,
-            hidden_size=d_model,
-            num_layers=num_layers,
-            batch_first=True,
-            dropout = 0.2,
-        )
-
-    def forward(self, know_emb):
-        """
-        know_emb: (B, T, 768)
-        """
-                # ================= 时序对齐修复 (Right Shift) =================
-        B, T, D = know_emb.size()
-        # 构造一个全 0 的初始特征，代表时刻 0 (没有任何交互时的先验状态)
-        zero_pad = torch.zeros(B, 1, D, device=know_emb.device, dtype=know_emb.dtype)
-        # 拼接并在末尾截断，使得长度保持 T: 
-        #[0, emb_1, emb_2, ..., emb_{T-1}]
-        shifted_know_emb = torch.cat([zero_pad, know_emb[:, :-1, :]], dim=1)
-
-        x = self.proj(shifted_know_emb)  # (B, T, d_model)
-        h_t2, _ = self.gru(x)    # (B, T, d_model)
-        return h_t2
-class ContrastiveLoss(nn.Module):
-    """
-    同时间步 z1 和 z2 为正样本
-    其余为负样本
-    """
-    def __init__(self, temperature=0.2):
-        super().__init__()
-        self.temperature = temperature
-
-    def forward(self, z1, z2, mask=None):
-        """
-        z1, z2: (B, T, proj_dim)
-        """
-
-        B, T, D = z1.shape
-        # =================[必须修改点 1: L2 归一化] =================
-        # 沿着最后一个维度 (proj_dim) 将向量长度归一化为 1
-        # 只有这样，两个向量的点乘结果才是严格的余弦相似度 [-1, 1]
-        # z1 = F.normalize(z1, p=2, dim=-1)
-        # z2 = F.normalize(z2, p=2, dim=-1)
-
-        z1 = z1.reshape(B*T, D)
-        z2 = z2.reshape(B*T, D)
-
-        if mask is not None:
-            # mask 展平: (B, T) -> (B * T,)
-            mask_flat = mask.reshape(-1).bool()
-            
-            # 仅保留真实的做题记录，抛弃 padding 的全0位置
-            z1 = z1[mask_flat]  # 形状变为 (N_valid, D)
-            z2 = z2[mask_flat]  # 形状变为 (N_valid, D)
-
-        logits = torch.matmul(z1, z2.T) / self.temperature  # (BT, BT)
-
-        labels = torch.arange(z1.size(0), device=z1.device)
-
-        loss = F.cross_entropy(logits, labels)
-
-        return loss
-class GatedFusionPredictor(nn.Module):
-    def __init__(self, d_model=256):
-        super().__init__()
-
-        self.gate = nn.Sequential(
-            nn.Linear(d_model * 2, d_model),
-            nn.Sigmoid()
-        )
-
-        self.predict = nn.Sequential(
-            nn.Linear(d_model * 2, d_model),
-            nn.ReLU(),
-            nn.Linear(d_model, 1)
-        )
-
-    def forward(self, h1, h2, e_q_next):
-        """
-        h1: (B, T, d_model)
-        h2: (B, T, d_model)
-        e_q_next: (B, T, d_model)
-        """
-
-        concat = torch.cat([h1, h2], dim=-1)
-
-        g = self.gate(concat)  # (B, T, d_model)
-
-        h_fuse = g * h1 + (1 - g) * h2
-
-        # 与下一题 embedding 结合
-        pred_input = torch.cat([h_fuse, e_q_next], dim=-1)
-
-        y = torch.sigmoid(self.predict(pred_input)).squeeze(-1)
-
-        return y
-
-# class DecoupledLLMContrastiveKT(nn.Module):
-# class AKT(nn.Module):
-#     def __init__(self,
-#                  n_question,
-#                  n_pid,
-#                  d_model,
-#                  n_blocks,
-#                  dropout,
-#                  d_ff=256,
-#                  kq_same=1,
-#                  final_fc_dim=512,
-#                  num_attn_heads=8,
-#                  separate_qa=False,
-#                  l2=1e-5,
-#                  emb_type="qid",
-#                  ta_emb_path="",
-#                  ks_emb_path="",
-#                  pretrain_dim=768,
-#                  llm_dim=768,
-#                  proj_dim=128):
-
-#         super().__init__()
-#         self.model_name = "akt"
-#         self.n_question = n_question
-#         self.dropout = dropout
-#         self.kq_same = kq_same
-#         self.n_pid = n_pid
-#         self.l2 = l2
-#         self.model_type = self.model_name
-#         self.separate_qa = separate_qa
-#         self.emb_type = emb_type
-
-#         self.cl_weight = 0.5
-
-#         self.ta_emb_path = ta_emb_path
-#         self.ks_emb_path = ks_emb_path
-
-#         if emb_type.startswith("qid"):
-#             # n_question+1 ,d_model
-#             self.q_embed = nn.Embedding(self.n_question, d_model)
-#             if self.separate_qa: 
-#                 self.qa_embed = nn.Embedding(2*self.n_question+1, d_model) # interaction emb
-#             else: # false default
-#                 self.qa_embed = nn.Embedding(2, d_model)
-#         if self.ta_emb_path:
-#             ta_weight = np.load(self.ta_emb_path)
-#             ta_weight = torch.from_numpy(ta_weight).float()
-#             self.ta_dim = ta_weight.shape[1]
-#             self.ta_emb = nn.Embedding.from_pretrained(
-#                 ta_weight, freeze=True
-#             )    
-#         if self.ks_emb_path:
-#             ks_weight = np.load(self.ks_emb_path)
-#             ks_weight = torch.from_numpy(ks_weight).float()
-#             self.ks_dim = ks_weight.shape[1]
-#             self.ks_emb = nn.Embedding.from_pretrained(
-#                 ks_weight, freeze=True
-#             )
-#         self.norm = nn.LayerNorm(d_model)
-
-
-#         self.attn = AttnBranch(n_question=n_question, n_blocks=n_blocks, n_heads=num_attn_heads, dropout=dropout,
-#                                     d_model=d_model, d_feature=d_model / num_attn_heads, d_ff=d_ff,  kq_same=self.kq_same, model_type=self.model_type, emb_type=self.emb_type)
-#         self.gru = GRUBranch(llm_dim=768, d_model=d_model)
-
-#         self.proj1 = ProjectionHead(d_model, proj_dim)
-#         self.proj2 = ProjectionHead(d_model, proj_dim)
-
-#         self.cl_loss = ContrastiveLoss(temperature=0.2)
-
-#         self.predictor = GatedFusionPredictor(d_model)
-#     def forward(self, q, r, s=None, pid_data=None, qtest=False):
-#         """
-#         q: (B, T)
-#         r: (B, T)
-#         tech_emb: (B, T, 768)
-#         know_emb: (B, T, 768)
-#         """
-#         emb_type = self.emb_type
-#         # Batch First
-#         if emb_type.startswith("qid"):
-#             q_embed_data = self.q_embed(q)
-#             r_embed_data = self.qa_embed(r)
-#             ta_embed_data = self.ta_emb(s)
-#             ks_embed_data = self.ks_emb(s)
-#         # ====== Branch 1 ======
-#         h1 = self.attn(q_embed_data, r_embed_data, ta_embed_data)  # (B, T, d)
-#         # ====== Branch 2 ======
-#         h2 = self.gru(ks_embed_data)             # (B, T, d)
-
-#         # ====== Contrastive ======
-#         z1 = self.proj1(h1)
-#         z2 = self.proj2(h2)
-#         mask = None
-#         # mask = (q != -1)       
-#         # for i in range(q.size(0)):
-#         #     if (q[i] == -1).any():
-#         #         print("q:")
-#         #         print(q[i])
-#         #         print("mask:")
-#         #         print(mask[i])
-#         #         print("="*50)
-#         loss_cl = self.cl_loss(z1, z2, mask)
-
-#         # ====== Next Question Prediction ======
-#         # e_q_next = q_embed_data[:, 1:, :]
-#         # h1 = h1[:, :-1, :]
-#         # h2 = h2[:, :-1, :]
-
-#         y_pred = self.predictor(h1, h2, q_embed_data)
-
-#         rasch_reg = 0
-#         total_loss = rasch_reg + self.cl_weight*loss_cl
-#         return y_pred, total_loss
-class GRUMemoryRetriever(nn.Module):
-    def __init__(self, d_model=256, n_heads=8, dropout=0.1):
-        super().__init__()
-        self.d_k = d_model // n_heads
-        self.h = n_heads
-
-        self.q_linear = nn.Linear(d_model, d_model)
-        self.k_linear = nn.Linear(d_model, d_model)
-        self.v_linear = nn.Linear(d_model, d_model)
-        self.dropout = nn.Dropout(dropout)
-        self.out_proj = nn.Linear(d_model, d_model)
-
-    def forward(self, h_akt, h_gru, mask=None):
-        """
-        h_akt: (B, T, d_model)  —— 当前时刻的“认知需求”表示，来自 AKT 分支
-        h_gru: (B, T, d_model)  —— 纯知识记忆轨迹，来自 GRU 分支
-        mask:  (B, T) bool      —— padding mask，可选
-        """
-        B, T, D = h_akt.size()
-
-        q = self.q_linear(h_akt).view(B, T, self.h, self.d_k).transpose(1, 2)  # (B, H, T, d_k)
-        k = self.k_linear(h_gru).view(B, T, self.h, self.d_k).transpose(1, 2) # (B, H, T, d_k)
-        v = self.v_linear(h_gru).view(B, T, self.h, self.d_k).transpose(1, 2) # (B, H, T, d_k)
-
-        # 构造“只能看历史”的因果 mask：每个 t 只能看到 <= t 的 h_gru
-        causal = torch.tril(torch.ones(T, T, device=h_akt.device)).unsqueeze(0).unsqueeze(0)  # (1, 1, T, T)
-        # scores: (B, H, T, T)
-        scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.d_k)
-        scores = scores.masked_fill(causal == 0, float('-inf'))
-
-        if mask is not None:
-            # mask: (B, T) -> (B, 1, 1, T)
-            pad_mask = (~mask).unsqueeze(1).unsqueeze(1)
-            scores = scores.masked_fill(pad_mask, float('-inf'))
-
-        attn = torch.softmax(scores, dim=-1)
-        attn = self.dropout(attn)
-        # (B, H, T, d_k)
-        context = torch.matmul(attn, v)
-
-        # (B, T, D)
-        context = context.transpose(1, 2).contiguous().view(B, T, D)
-        out = self.out_proj(context)  # (B, T, D)
-
-        return out
 class AKT(nn.Module):
     def __init__(self, n_question, n_pid, d_model, n_blocks, dropout, d_ff=256, 
             kq_same=1, final_fc_dim=512, num_attn_heads=8, separate_qa=False, l2=1e-5, emb_type="qid", emb_path="", ta_emb_path = "", ks_emb_path="", pretrain_dim=768, num_layers):
@@ -362,22 +81,14 @@ class AKT(nn.Module):
                                     d_model=d_model, d_feature=d_model / num_attn_heads, d_ff=d_ff,  kq_same=self.kq_same, model_type=self.model_type, emb_type=self.emb_type)
         self.ta_emb_path = ta_emb_path
         self.ks_emb_path = ks_emb_path
-        if self.ks_emb_path:
-            self.out = nn.Sequential(
-                nn.Linear(2*d_model + embed_l,
-                        final_fc_dim), nn.ReLU(), nn.Dropout(self.dropout),
-                nn.Linear(final_fc_dim, 256), nn.ReLU(
-                ), nn.Dropout(self.dropout),
-                nn.Linear(256, 1)
-            )
-        else:
-            self.out = nn.Sequential(
-                nn.Linear(d_model + embed_l,
-                        final_fc_dim), nn.ReLU(), nn.Dropout(self.dropout),
-                nn.Linear(final_fc_dim, 256), nn.ReLU(
-                ), nn.Dropout(self.dropout),
-                nn.Linear(256, 1)
-            )
+
+        self.out = nn.Sequential(
+            nn.Linear(d_model + embed_l,
+                    final_fc_dim), nn.ReLU(), nn.Dropout(self.dropout),
+            nn.Linear(final_fc_dim, 256), nn.ReLU(
+            ), nn.Dropout(self.dropout),
+            nn.Linear(256, 1)
+        )
         self.reset()
 
         if self.ta_emb_path:
@@ -399,8 +110,7 @@ class AKT(nn.Module):
             self.ks_emb = nn.Embedding.from_pretrained(
                 ks_weight, freeze=True
             )    
-            self.gru = GRUBranch(llm_dim=self.ks_dim, d_model=d_model, num_layers = num_layers)
-            self.gru_retriever = GRUMemoryRetriever(d_model=d_model, n_heads=num_attn_heads, dropout=dropout)
+
     def reset(self):
         for p in self.parameters():
             if p.size(0) == self.n_pid+1 and self.n_pid > 0:
@@ -456,33 +166,16 @@ class AKT(nn.Module):
             if s is None:
                 raise ValueError("模型初始化了 emb_path,但在 forward 时未提供 sub_id")
             ks_emb = self.ks_emb(s)
-            h_gru  = self.gru(ks_emb)
-            self.proj1 = ProjectionHead(d_model, proj_dim)
-            self.proj2 = ProjectionHead(d_model, proj_dim)
 
-            self.cl_loss = ContrastiveLoss(temperature=0.2)
-            self.cl_weight = 0.5
         d_output = self.model(q_embed_data, qa_embed_data, pid_embed_data)
 
-        loss_cl = 0
-        if self.ks_emb_path:
-            # h_retr = self.gru_retriever(h_akt=d_output, h_gru=h_gru, mask=attn_m)
-            # concat_q = torch.cat([d_output, h_retr, q_embed_data], dim=-1)
-
-            #对比学习
-            z1 = self.proj1(h1)
-            z2 = self.proj2(h2)
-            loss_cl = self.cl_loss(z1, z2, attn_m)
-
-            concat_q = torch.cat([d_output, h_gru, q_embed_data], dim=-1)
-            output = self.out(concat_q).squeeze(-1)
-        else:
-            concat_q = torch.cat([d_output, q_embed_data], dim=-1)
-            output = self.out(concat_q).squeeze(-1)
+       
+        concat_q = torch.cat([d_output, q_embed_data], dim=-1)
+        output = self.out(concat_q).squeeze(-1)
         m = nn.Sigmoid()
         preds = m(output)
         if not qtest:
-            return preds, c_reg_loss+self.cl_weight*loss_cl
+            return preds, c_reg_loss
         else:
             return preds, c_reg_loss, concat_q
 
