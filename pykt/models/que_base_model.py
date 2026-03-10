@@ -233,7 +233,7 @@ class QueBaseModel(nn.Module):
     
     def batch_to_device(self,data,process=True):
         if not process:
-            return data
+            return data.to(self.device)
         dcur = data
         # q, c, r, t = dcur["qseqs"], dcur["cseqs"], dcur["rseqs"], dcur["tseqs"]
         # qshft, cshft, rshft, tshft = dcur["shft_qseqs"], dcur["shft_cseqs"], dcur["shft_rseqs"], dcur["shft_tseqs"]
@@ -253,6 +253,9 @@ class QueBaseModel(nn.Module):
         data_new['tshft'] = dcur["shft_tseqs"]
         data_new['m'] = dcur["masks"]
         data_new['sm'] = dcur["smasks"]
+        # 关键：统一搬到 self.device
+        for k in data_new:
+            data_new[k] = data_new[k].to(self.device)
         return data_new
 
     def train(self,train_dataset, valid_dataset,batch_size=16,valid_batch_size=None,num_epochs=32, test_loader=None, test_window_loader=None,save_dir="tmp",save_model=False,patient=10,shuffle=True,process=True):

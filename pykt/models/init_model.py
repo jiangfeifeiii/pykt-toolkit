@@ -37,16 +37,17 @@ from .lefokt_akt import LEFOKT_AKT
 from .ukt import UKT
 from .hcgkt import HCGKT
 from .robustkt import Robustkt
+from .mykt import Mykt
 
 device = "cpu" if not torch.cuda.is_available() else "cuda"
 
 def init_model(model_name, model_config, data_config, emb_type):
     if model_name == "dkt":
-        model = DKT(data_config["num_c"], **model_config, emb_type=emb_type, ta_emb_path=data_config["ta_emb_path"], ks_emb_path=data_config["ks_emb_path"]).to(device)
+        model = DKT(data_config["num_c"], **model_config, emb_type=emb_type, emb_path="").to(device)
     elif model_name == "dkt+":
         model = DKTPlus(data_config["num_c"], **model_config, emb_type=emb_type, emb_path=data_config["emb_path"]).to(device)
     elif model_name == "dkvmn":
-        model = DKVMN(data_config["num_c"], **model_config, emb_type=emb_type, ta_emb_path=data_config["ta_emb_path"], ks_emb_path=data_config["ks_emb_path"]).to(device)
+        model = DKVMN(data_config["num_c"], **model_config, emb_type=emb_type, emb_path=data_config["emb_path"]).to(device)
     elif model_name == "deep_irt":
         model = DeepIRT(data_config["num_c"], **model_config, emb_type=emb_type, emb_path=data_config["emb_path"]).to(device)
     elif model_name == "sakt":
@@ -56,7 +57,8 @@ def init_model(model_name, model_config, data_config, emb_type):
     elif model_name == "dkt_forget":
         model = DKTForget(data_config["num_c"], data_config["num_rgap"], data_config["num_sgap"], data_config["num_pcount"], **model_config).to(device)
     elif model_name == "akt":
-        model = AKT(data_config["num_c"], data_config["num_q"], **model_config, emb_type=emb_type, ta_emb_path=data_config["ta_emb_path"], ks_emb_path=data_config["ks_emb_path"]).to(device)
+        model = AKT(data_config["num_c"], data_config["num_q"], **model_config, emb_type=emb_type, emb_path=data_config["emb_path"]).to(device)
+        # model = AKT(data_config["num_c"], data_config["num_q"], **model_config, emb_type=emb_type, ta_emb_path=data_config["ta_emb_path"], ks_emb_path=data_config["ks_emb_path"]).to(device)
     elif model_name == "lefokt_akt":
         model = LEFOKT_AKT(data_config["num_c"], data_config["num_q"], **model_config, emb_type=emb_type, emb_path=data_config["emb_path"]).to(device)
     elif model_name == "extrakt":
@@ -138,6 +140,8 @@ def init_model(model_name, model_config, data_config, emb_type):
     elif model_name == "dtransformer":
         model = DTransformer(data_config["num_c"], data_config["num_q"], **model_config, emb_type=emb_type,
                      emb_path=data_config["emb_path"]).to(device)      
+    elif model_name == "mykt":
+        model = Mykt(data_config["num_c"], data_config["num_q"], **model_config, emb_type=emb_type, ta_emb_path=data_config["ta_emb_path"], ks_emb_path=data_config["ks_emb_path"]).to(device)
     else:
         print("The wrong model name was used...")
         return None

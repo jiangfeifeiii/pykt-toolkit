@@ -75,7 +75,10 @@ def cal_loss(model, ys, r, rshft, sm, preloss=[]):
         t = torch.masked_select(rshft, sm)
         criterion = nn.BCELoss(reduction='none')        
         loss = criterion(y, t).sum()
-    
+    elif model_name == "mykt":
+        y = torch.masked_select(ys[0], sm)
+        t = torch.masked_select(rshft, sm)
+        loss = binary_cross_entropy(y.double(), t.double()) + preloss[0]
     return loss
 
 
@@ -91,14 +94,23 @@ def model_forward(model, data, rel=None):
         q, c, r, t,sd,qd = dcur["qseqs"].to(device), dcur["cseqs"].to(device), dcur["rseqs"].to(device), dcur["tseqs"].to(device),dcur["sdseqs"].to(device),dcur["qdseqs"].to(device)
         qshft, cshft, rshft, tshft,sdshft,qdshft = dcur["shft_qseqs"].to(device), dcur["shft_cseqs"].to(device), dcur["shft_rseqs"].to(device), dcur["shft_tseqs"].to(device),dcur["shft_sdseqs"].to(device),dcur["shft_qdseqs"].to(device)
     else:
-        q, c, r, t, s = dcur["qseqs"].to(device), dcur["cseqs"].to(device), dcur["rseqs"].to(device), dcur["tseqs"].to(device), dcur["sseqs"].to(device)
-        qshft, cshft, rshft, tshft, sshft = dcur["shft_qseqs"].to(device), dcur["shft_cseqs"].to(device), dcur["shft_rseqs"].to(device), dcur["shft_tseqs"].to(device), dcur["shft_sseqs"].to(device)
+        # q, c, r, t, s = dcur["qseqs"].to(device), dcur["cseqs"].to(device), dcur["rseqs"].to(device), dcur["tseqs"].to(device), dcur["sseqs"].to(device)
+        # qshft, cshft, rshft, tshft, sshft = dcur["shft_qseqs"].to(device), dcur["shft_cseqs"].to(device), dcur["shft_rseqs"].to(device), dcur["shft_tseqs"].to(device), dcur["shft_sseqs"].to(device)
+        q, c, r, t = dcur["qseqs"].to(device), dcur["cseqs"].to(device), dcur["rseqs"].to(device), dcur["tseqs"].to(device)
+        qshft, cshft, rshft, tshft = dcur["shft_qseqs"].to(device), dcur["shft_cseqs"].to(device), dcur["shft_rseqs"].to(device), dcur["shft_tseqs"].to(device)
+        if model_name in ["mykt", "akt"]:
+            attn_m = dcur["attn_masks"].to(device)
+            s = dcur["sseqs"].to(device)
+            sshft = dcur["shft_sseqs"].to(device)
+            cs = torch.cat((s[:,0:1], sshft), dim=1)
+    
     m, sm = dcur["masks"].to(device), dcur["smasks"].to(device)
+
     ys, preloss = [], []
     cq = torch.cat((q[:,0:1], qshft), dim=1)
     cc = torch.cat((c[:,0:1], cshft), dim=1)
     cr = torch.cat((r[:,0:1], rshft), dim=1)
-    cs = torch.cat((s[:,0:1], sshft), dim=1)
+
     if model_name in ["hawkes"]:
         ct = torch.cat((t[:,0:1], tshft), dim=1)
     elif model_name in ["rkt"]:
@@ -196,7 +208,7 @@ def model_forward(model, data, rel=None):
         # cat = torch.cat((d["at_seqs"][:,0:1], dshft["at_seqs"]), dim=1)
         cit = torch.cat((dcur["itseqs"][:,0:1], dcur["shft_itseqs"]), dim=1)
     if model_name in ["dkt"]:
-        y = model(c.long(), r.long(), s.long())
+        y = model(c.long(), r.long())
         y = (y * one_hot(cshft.long(), model.num_c)).sum(-1)
         ys.append(y) # first: yshft
     elif model_name == "dkt+":
@@ -209,7 +221,7 @@ def model_forward(model, data, rel=None):
         y = (y * one_hot(cshft.long(), model.num_c)).sum(-1)
         ys.append(y)
     elif model_name in ["dkvmn","deep_irt", "skvmn"]:
-        y = model(cc.long(), cr.long(), cs.long())
+        y = model(cc.long(), cr.long())
         ys.append(y[:,1:])
     elif model_name in ["kqn", "sakt"]:
         y = model(c.long(), r.long(), cshft.long())
@@ -218,7 +230,8 @@ def model_forward(model, data, rel=None):
         y = model(cq.long(), cc.long(), r.long())
         ys.append(y[:, 1:])
     elif model_name in ["akt","extrakt","folibikt", "robustkt", "akt_vector", "akt_norasch", "akt_mono", "akt_attn", "aktattn_pos", "aktmono_pos", "akt_raschx", "akt_raschy", "aktvec_raschx", "lefokt_akt", "fluckt"]:               
-        y, reg_loss = model(cc.long(), cr.long(), cs.long(), cq.long())
+        y, reg_loss = model(cc.long(), cr.long(), cs.long(), cq.long(), attn_m)
+        # y, reg_loss = model(cc.long(), cr.long(), cq.long())
         ys.append(y[:,1:])
         preloss.append(reg_loss)
     elif model_name in ["atkt", "atktfix"]:
@@ -253,6 +266,10 @@ def model_forward(model, data, rel=None):
     elif model_name == "dimkt":
         y = model(q.long(),c.long(),sd.long(),qd.long(),r.long(),qshft.long(),cshft.long(),sdshft.long(),qdshft.long())
         ys.append(y) 
+    elif model_name == "mykt":
+        y, loss = model(cc.long(), cr.long(), cs.long(), cq.long())
+        ys.append(y[:,1:])
+        preloss.append(loss)
 
     if model_name not in ["atkt", "atktfix"]+que_type_models or model_name in ["lpkt", "rkt"]:
         loss = cal_loss(model, ys, r, rshft, sm, preloss)
@@ -280,6 +297,13 @@ def train_model(model, train_loader, valid_loader, num_epochs, opt, ckpt_path, t
 
     if model.model_name=='lpkt':
         scheduler = torch.optim.lr_scheduler.StepLR(opt, 10, gamma=0.5)
+    else:
+        # 引入 ReduceLROnPlateau，专门针对 akt 及其他模型
+        # mode='max': 监控的指标(AUC)越大越好
+        # factor=0.5: 触发时学习率减半 (例如 5e-4 -> 2.5e-4)
+        # patience=3: 连续 3 个 Epoch 验证集 AUC 没有提升，就触发学习率衰减
+        # verbose=True: 触发衰减时在控制台打印提示信息
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(opt, mode='max', factor=0.5, patience=3, verbose=True)
     for i in range(1, num_epochs + 1):
         loss_mean = []
         for data in train_loader:
@@ -307,8 +331,7 @@ def train_model(model, train_loader, valid_loader, num_epochs, opt, ckpt_path, t
             if model.model_name == "gkt" and train_step%10==0:
                 text = f"Total train step is {train_step}, the loss is {loss.item():.5}"
                 debug_print(text = text,fuc_name="train_model")
-        if model.model_name=='lpkt':
-            scheduler.step()#update each epoch
+
         loss_mean = np.mean(loss_mean)
         
         if model.model_name=='rkt':
@@ -317,6 +340,17 @@ def train_model(model, train_loader, valid_loader, num_epochs, opt, ckpt_path, t
             auc, acc = evaluate(model, valid_loader, model.model_name)
         ### atkt 有diff， 以下代码导致的
         ### auc, acc = round(auc, 4), round(acc, 4)
+                ### ================= [修改点 2: 更新调度器] ================= ###
+        if model.model_name=='lpkt':
+            scheduler.step()#update each epoch
+        else:
+            # 将当前 epoch 得到的验证集 auc 传给调度器
+            # 如果连续多次(patience)没创新高，它就会自动将优化器 opt 的学习率乘以 factor
+            # scheduler.step(auc)
+            
+            # (可选) 打印当前学习率，方便你观察
+            current_lr = opt.param_groups[0]['lr']
+            print(f"            [Current Learning Rate]: {current_lr}")
 
         if auc > max_auc+1e-3:
             if save_model:

@@ -64,10 +64,15 @@ def evaluate(model, test_loader, model_name, rel=None, save_path=""):
                 qshft, cshft, rshft, sdshft,qdshft = dcur["shft_qseqs"], dcur["shft_cseqs"], dcur["shft_rseqs"], dcur["shft_sdseqs"],dcur["shft_qdseqs"]
                 sd, qd, sdshft, qdshft = sd.to(device), qd.to(device), sdshft.to(device), qdshft.to(device)
             else:
-                q, c, r, s = dcur["qseqs"], dcur["cseqs"], dcur["rseqs"], dcur["sseqs"] 
-                qshft, cshft, rshft, sshft= dcur["shft_qseqs"], dcur["shft_cseqs"], dcur["shft_rseqs"], dcur["shft_sseqs"]
+                q, c, r = dcur["qseqs"], dcur["cseqs"], dcur["rseqs"]
+                qshft, cshft, rshft= dcur["shft_qseqs"], dcur["shft_cseqs"], dcur["shft_rseqs"]
+                if model_name in ["mykt", "akt"]:
+                    attn_m = dcur["attn_masks"].to(device)
+                    s = dcur["sseqs"].to(device)
+                    sshft = dcur["shft_sseqs"].to(device)
+                    cs = torch.cat((s[:,0:1], sshft), dim=1)
             m, sm = dcur["masks"], dcur["smasks"]
-            q, c, r, s, qshft, cshft, rshft, sshft, m, sm = q.to(device), c.to(device), r.to(device), s.to(device), qshft.to(device), cshft.to(device), rshft.to(device), sshft.to(device), m.to(device), sm.to(device) 
+            q, c, r, qshft, cshft, rshft, m, sm = q.to(device), c.to(device), r.to(device), qshft.to(device), cshft.to(device), rshft.to(device), m.to(device), sm.to(device) 
             if model.model_name in que_type_models and model_name not in ["lpkt", "rkt", "promptkt", "unikt"]:
                 model.model.eval()
             else:
@@ -77,7 +82,6 @@ def evaluate(model, test_loader, model_name, rel=None, save_path=""):
             cq = torch.cat((q[:,0:1], qshft), dim=1)
             cc = torch.cat((c[:,0:1], cshft), dim=1)
             cr = torch.cat((r[:,0:1], rshft), dim=1)
-            cs = torch.cat((s[:,0:1], sshft), dim=1)
             if model_name in ["atdkt"]:
                 '''
                 y = model(dcur) 
@@ -102,13 +106,13 @@ def evaluate(model, test_loader, model_name, rel=None, save_path=""):
             elif model_name in ["rekt"]:
                 y = model(dcur)
             elif model_name in ["dkt", "dkt+"]:
-                y = model(c.long(), r.long(), s.long())
+                y = model(c.long(), r.long())
                 y = (y * one_hot(cshft.long(), model.num_c)).sum(-1)
             elif model_name in ["dkt_forget"]:
                 y = model(c.long(), r.long(), dgaps)
                 y = (y * one_hot(cshft.long(), model.num_c)).sum(-1)
             elif model_name in ["dkvmn","deep_irt", "skvmn","deep_irt"]:
-                y = model(cc.long(), cr.long(), cs.long())
+                y = model(cc.long(), cr.long())
                 y = y[:,1:]
             elif model_name in ["kqn", "sakt"]:
                 y = model(c.long(), r.long(), cshft.long())
@@ -116,7 +120,8 @@ def evaluate(model, test_loader, model_name, rel=None, save_path=""):
                 y = model(cq.long(), cc.long(), r.long())
                 y = y[:, 1:]
             elif model_name in ["akt","extrakt","folibikt", "robustkt", "akt_vector", "akt_norasch", "akt_mono", "akt_attn", "aktattn_pos", "aktmono_pos", "akt_raschx", "akt_raschy", "aktvec_raschx", "lefokt_akt", "fluckt"]:                                
-                y, reg_loss = model(cc.long(), cr.long(), cs.long(), cq.long())
+                y, reg_loss = model(cc.long(), cr.long(), cs.long(), cq.long(), attn_m)
+                # y, reg_loss = model(cc.long(), cr.long(), cq.long())
                 y = y[:,1:]
             elif model_name in ["dtransformer"]:
                 output, *_ = model.predict(cc.long(), cr.long(), cq.long())
@@ -149,6 +154,9 @@ def evaluate(model, test_loader, model_name, rel=None, save_path=""):
                     c, cshft = q, qshft  # question level
             elif model_name == "dimkt":
                 y = model(q.long(),c.long(),sd.long(),qd.long(),r.long(),qshft.long(),cshft.long(),sdshft.long(),qdshft.long())
+            elif model_name == "mykt":
+                y, reg_loss = model(cc.long(), cr.long(), cs.long(), cq.long())
+                y = y[:,1:]
             # print(f"after y: {y.shape}")
             # save predict result
             if save_path != "":

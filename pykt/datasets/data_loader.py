@@ -86,7 +86,7 @@ class KTDataset(Dataset):
         dcur = dict()
         mseqs = self.dori["masks"][index]
         for key in self.dori:
-            if key in ["masks", "smasks"]:
+            if key in ["masks", "smasks", "attn_masks"]:
                 continue
             if len(self.dori[key]) == 0:
                 dcur[key] = self.dori[key]
@@ -97,6 +97,7 @@ class KTDataset(Dataset):
             shft_seqs = self.dori[key][index][1:] * mseqs
             dcur[key] = seqs
             dcur["shft_"+key] = shft_seqs
+        dcur["attn_masks"] = self.dori["attn_masks"][index]
         dcur["masks"] = mseqs
         dcur["smasks"] = self.dori["smasks"][index]
         # print("tseqs", dcur["tseqs"])
@@ -124,7 +125,7 @@ class KTDataset(Dataset):
             - **dqtest (dict)**: not null only self.qtest is True, for question level evaluation
             - **s_seqs (torch.tensor)**: submission id
         """
-        dori = {"qseqs": [], "cseqs": [], "rseqs": [], "sseqs":[], "tseqs": [], "utseqs": [], "smasks": []}
+        dori = {"qseqs": [], "cseqs": [], "rseqs": [], "sseqs":[], "tseqs": [], "utseqs": [], "smasks": [], "attn_masks":[]}
 
         # seq_qids, seq_cids, seq_rights, seq_mask = [], [], [], []
         df = pd.read_csv(sequence_path)#[0:1000]
@@ -168,7 +169,8 @@ class KTDataset(Dataset):
         dori["smasks"] = (dori["smasks"][:, 1:] != pad_val)
         print(f"interaction_num: {interaction_num}")
         # print("load data tseqs: ", dori["tseqs"])
-
+        attn_seqs = (dori["cseqs"]!=pad_val)
+        dori["attn_masks"] = attn_seqs
         if self.qtest:
             for key in dqtest:
                 dqtest[key] = LongTensor(dqtest[key])[:, 1:]
