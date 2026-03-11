@@ -79,6 +79,11 @@ def cal_loss(model, ys, r, rshft, sm, preloss=[]):
         y = torch.masked_select(ys[0], sm)
         t = torch.masked_select(rshft, sm)
         loss = binary_cross_entropy(y.double(), t.double()) + preloss[0]
+    elif model_name == "cakt":
+        y = torch.masked_select(ys[0], sm)
+        t = torch.masked_select(rshft, sm)
+        # preloss[0] = c_reg_loss + lambda_mse * mse_loss，由 model_forward 打包传入
+        loss = binary_cross_entropy(y.double(), t.double()) + preloss[0]
     return loss
 
 
@@ -100,6 +105,10 @@ def model_forward(model, data, rel=None):
         qshft, cshft, rshft, tshft = dcur["shft_qseqs"].to(device), dcur["shft_cseqs"].to(device), dcur["shft_rseqs"].to(device), dcur["shft_tseqs"].to(device)
         if model_name in ["mykt", "akt"]:
             attn_m = dcur["attn_masks"].to(device)
+            s = dcur["sseqs"].to(device)
+            sshft = dcur["shft_sseqs"].to(device)
+            cs = torch.cat((s[:,0:1], sshft), dim=1)
+        if model_name in ["cakt"]:
             s = dcur["sseqs"].to(device)
             sshft = dcur["shft_sseqs"].to(device)
             cs = torch.cat((s[:,0:1], sshft), dim=1)
@@ -270,6 +279,10 @@ def model_forward(model, data, rel=None):
         y, loss = model(cc.long(), cr.long(), cs.long(), cq.long())
         ys.append(y[:,1:])
         preloss.append(loss)
+    elif model_name == "cakt":
+        y, reg_loss, mse_loss = model(cc.long(), cr.long(), cs.long(), cq.long())
+        ys.append(y[:,1:])
+        preloss.append(reg_loss + model.lambda_mse * mse_loss)
 
     if model_name not in ["atkt", "atktfix"]+que_type_models or model_name in ["lpkt", "rkt"]:
         loss = cal_loss(model, ys, r, rshft, sm, preloss)

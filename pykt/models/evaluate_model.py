@@ -71,6 +71,10 @@ def evaluate(model, test_loader, model_name, rel=None, save_path=""):
                     s = dcur["sseqs"].to(device)
                     sshft = dcur["shft_sseqs"].to(device)
                     cs = torch.cat((s[:,0:1], sshft), dim=1)
+                if model_name in ["cakt"]:
+                    s = dcur["sseqs"].to(device)
+                    sshft = dcur["shft_sseqs"].to(device)
+                    cs = torch.cat((s[:,0:1], sshft), dim=1)
             m, sm = dcur["masks"], dcur["smasks"]
             q, c, r, qshft, cshft, rshft, m, sm = q.to(device), c.to(device), r.to(device), qshft.to(device), cshft.to(device), rshft.to(device), m.to(device), sm.to(device) 
             if model.model_name in que_type_models and model_name not in ["lpkt", "rkt", "promptkt", "unikt"]:
@@ -156,6 +160,9 @@ def evaluate(model, test_loader, model_name, rel=None, save_path=""):
                 y = model(q.long(),c.long(),sd.long(),qd.long(),r.long(),qshft.long(),cshft.long(),sdshft.long(),qdshft.long())
             elif model_name == "mykt":
                 y, reg_loss = model(cc.long(), cr.long(), cs.long(), cq.long())
+                y = y[:,1:]
+            elif model_name == "cakt":
+                y, reg_loss, mse_loss = model(cc.long(), cr.long(), cs.long(), cq.long())
                 y = y[:,1:]
             # print(f"after y: {y.shape}")
             # save predict result
