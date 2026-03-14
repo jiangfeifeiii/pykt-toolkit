@@ -286,6 +286,31 @@ class CAKT(nn.Module):
 
         self._reset_params()
 
+    # ── 工具方法 ──────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _masked_mse(
+        pred: torch.Tensor,
+        target: torch.Tensor,
+        mask: torch.Tensor = None,
+    ) -> torch.Tensor:
+        """
+        只对 mask=1 的有效位计算 MSE，排除 padding 位的噪声梯度。
+
+        Args:
+            pred:   (B, T', d_llm)
+            target: (B, T', d_llm)
+            mask:   (B, T')  1=有效位, 0=padding；为 None 时退化为普通 MSE
+        """
+        if mask is None:
+            return F.mse_loss(pred, target)
+        valid_mask = mask.bool().unsqueeze(-1)              # (B, T', 1)
+        n_valid = valid_mask.sum() * pred.size(-1)          # 有效元素总数
+        if n_valid == 0:
+            return torch.tensor(0.0, device=pred.device)
+        diff_sq = (pred - target) ** 2 * valid_mask         # 非有效位置零
+        return diff_sq.sum() / n_valid
+
     def _reset_params(self):
         """将 Rasch 难度嵌入初始化为 0（遵循原始 AKT 设定）。"""
         for p in self.parameters():
@@ -313,6 +338,7 @@ class CAKT(nn.Module):
         s: torch.Tensor = None,
         pid_data: torch.Tensor = None,
         qtest: bool = False,
+        masks: torch.Tensor = None,
     ):
         """
         前向传播。
@@ -379,10 +405,11 @@ class CAKT(nn.Module):
 
         # ── Step 6: 辅助任务 — 下一语义状态预测 L_MSE ────────────────────
         # 用 H^A_t 预测 e_ks_{t+1}，对齐行为隐空间与 LLM 语义空间
+        # masks (B, T-1): 1=有效位, 0=padding，仅对有效位计算 MSE
         aux_pred = self.aux_proj(H_A[:, :-1, :])          # (B, T-1, d_llm)
         aux_target = e_ks[:, 1:, :].detach()              # (B, T-1, d_llm)
-        mse_loss = F.mse_loss(aux_pred, aux_target)
-
+        mse_loss = self._masked_mse(aux_pred, aux_target, masks)
+        # mse_loss = F.mse_loss(aux_pred, aux_target)
         if qtest:
             return preds, c_reg_loss, mse_loss, concat_q
         return preds, c_reg_loss, mse_loss

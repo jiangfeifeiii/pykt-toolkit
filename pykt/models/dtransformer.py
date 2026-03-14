@@ -223,7 +223,8 @@ class DTransformer(nn.Module):
 
 
     def get_loss(self, q, s, pids=None, q_cl=False):
-        if pid.size(1) ==0:
+        pid = pids
+        if pid is not None and pid.size(1) == 0:
             pid = None
         q = q.to(device)
         s = s.to(device)

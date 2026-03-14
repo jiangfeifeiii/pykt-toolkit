@@ -47,7 +47,7 @@ def cal_loss(model, ys, r, rshft, sm, preloss=[]):
             loss1 = loss1 + model.cl_weight * loss2
         loss =loss1
 
-    elif model_name in ["rkt","dimkt","dkt", "dkt_forget", "dkvmn","deep_irt", "kqn", "sakt", "saint", "atkt", "atktfix", "gkt", "skvmn", "hawkes"]:
+    elif model_name in ["rkt","dimkt","dkt", "dkt_forget", "dkvmn","deep_irt", "kqn", "sakt", "saint", "atkt", "atktfix", "gkt", "skvmn", "hawkes", "codedkt"]:
 
         y = torch.masked_select(ys[0], sm)
         t = torch.masked_select(rshft, sm)
@@ -84,6 +84,11 @@ def cal_loss(model, ys, r, rshft, sm, preloss=[]):
         t = torch.masked_select(rshft, sm)
         # preloss[0] = c_reg_loss + lambda_mse * mse_loss，由 model_forward 打包传入
         loss = binary_cross_entropy(y.double(), t.double()) + preloss[0]
+    elif model_name == "cdkt":
+        y = torch.masked_select(ys[0], sm)
+        t = torch.masked_select(rshft, sm)
+        # preloss[0] = lambda_mse * mse_loss
+        loss = binary_cross_entropy(y.double(), t.double()) + preloss[0]
     return loss
 
 
@@ -112,6 +117,8 @@ def model_forward(model, data, rel=None):
             s = dcur["sseqs"].to(device)
             sshft = dcur["shft_sseqs"].to(device)
             cs = torch.cat((s[:,0:1], sshft), dim=1)
+        if model_name in ["cdkt", "codedkt"]:
+            s = dcur["sseqs"].to(device)
     
     m, sm = dcur["masks"].to(device), dcur["smasks"].to(device)
 
@@ -280,9 +287,18 @@ def model_forward(model, data, rel=None):
         ys.append(y[:,1:])
         preloss.append(loss)
     elif model_name == "cakt":
-        y, reg_loss, mse_loss = model(cc.long(), cr.long(), cs.long(), cq.long())
+        y, reg_loss, mse_loss = model(cc.long(), cr.long(), cs.long(), cq.long(), masks=m)
         ys.append(y[:,1:])
         preloss.append(reg_loss + model.lambda_mse * mse_loss)
+    elif model_name == "cdkt":
+        y, mse_loss = model(c.long(), r.long(), s.long(), masks=m)
+        y = (y * one_hot(cshft.long(), model.num_c)).sum(-1)
+        ys.append(y)
+        preloss.append(model.lambda_mse * mse_loss)
+    elif model_name == "codedkt":
+        y = model(c.long(), r.long(), s.long())
+        y = (y * one_hot(cshft.long(), model.num_c)).sum(-1)
+        ys.append(y)
 
     if model_name not in ["atkt", "atktfix"]+que_type_models or model_name in ["lpkt", "rkt"]:
         loss = cal_loss(model, ys, r, rshft, sm, preloss)
@@ -316,7 +332,7 @@ def train_model(model, train_loader, valid_loader, num_epochs, opt, ckpt_path, t
         # factor=0.5: 触发时学习率减半 (例如 5e-4 -> 2.5e-4)
         # patience=3: 连续 3 个 Epoch 验证集 AUC 没有提升，就触发学习率衰减
         # verbose=True: 触发衰减时在控制台打印提示信息
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(opt, mode='max', factor=0.5, patience=3, verbose=True)
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(opt, mode='max', factor=0.5, patience=3)
     for i in range(1, num_epochs + 1):
         loss_mean = []
         for data in train_loader:
@@ -338,6 +354,9 @@ def train_model(model, train_loader, valid_loader, num_epochs, opt, ckpt_path, t
                 clip_grad_norm_(model.parameters(), model.grad_clip)
             if model.model_name == "dtransformer":
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            # [Step1] gradient clipping for cakt: stabilize Attention gradients, reduce fold variance
+            # if model.model_name == "cakt":
+            #     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             opt.step()#update model’s parameters
                 
             loss_mean.append(loss.detach().cpu().numpy())
