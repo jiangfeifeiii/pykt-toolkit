@@ -164,7 +164,7 @@ def evaluate(model, test_loader, model_name, rel=None, save_path=""):
                 y, reg_loss = model(cc.long(), cr.long(), cs.long(), cq.long())
                 y = y[:,1:]
             elif model_name == "cakt":
-                y, reg_loss, mse_loss = model(cc.long(), cr.long(), cs.long(), cq.long(), masks=m)
+                y, reg_loss, mse_loss, verify_loss = model(cc.long(), cr.long(), cs.long(), cq.long(), masks=m)
                 y = y[:,1:]
             elif model_name == "cdkt":
                 y, mse_loss = model(c.long(), r.long(), s.long(), masks=m)

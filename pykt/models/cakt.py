@@ -144,6 +144,43 @@ class CausalCrossAttention(nn.Module):
         return fused
 
 
+class AnswerCorrectionGate(nn.Module):
+    """
+    答案误差修正门控模块（Answer Correction Gate）
+
+    利用当前步的预测误差 error_t = r_{t+1} − ŷ_t，
+    对融合知识状态 fused_t 施加门控修正，
+    得到验证后的知识状态 fused_v_t，用于辅助预测任务。
+
+    仅在训练阶段激活（由调用方用 self.training 控制）。
+
+    输入：
+        fused:  (B, T', d_model)  融合知识状态序列（positions 0..T-2）
+        error:  (B, T')           预测误差标量序列
+    输出：
+        fused_v: (B, T', d_model) 修正后的知识状态
+    """
+
+    def __init__(self, d_model: int, dropout: float):
+        super().__init__()
+        # 门控投影：将 [fused; error_scalar] 映射到 gate 向量
+        self.gate_proj = nn.Linear(d_model + 1, d_model)
+        # 修正内容投影
+        self.corr_proj = nn.Linear(d_model, d_model)
+        self.dropout   = nn.Dropout(dropout)
+
+    def forward(
+        self,
+        fused: torch.Tensor,   # (B, T', d_model)
+        error: torch.Tensor,   # (B, T')
+    ) -> torch.Tensor:
+        error_expand = error.unsqueeze(-1)                              # (B, T', 1)
+        gate_in      = torch.cat([fused, error_expand], dim=-1)        # (B, T', d_model+1)
+        gate         = torch.sigmoid(self.gate_proj(gate_in))          # (B, T', d_model)
+        correction   = gate * torch.tanh(self.corr_proj(fused))        # (B, T', d_model)
+        return fused + self.dropout(correction)                        # (B, T', d_model)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Main Model — CAKT
 # ══════════════════════════════════════════════════════════════════════════════
@@ -162,7 +199,8 @@ class CAKT(nn.Module):
         Predict  │ F ⊕ q_embed → MLP → Sigmoid → ŷ
 
     训练目标：
-        L_Total = L_BCE + λ · L_MSE
+        L_Total = L_BCE + λ_mse · L_MSE + λ_verify · L_Verify
+        L_Verify = BCE(preds_v, r_{t+1})，答案误差修正验证辅助损失（仅训练时）
         其中 L_MSE 为辅助任务损失：用 H^A_t 预测 e_ks_{t+1}，
         迫使行为隐空间与 LLM 语义空间对齐。
 
@@ -203,6 +241,7 @@ class CAKT(nn.Module):
         ks_emb_path: str = "",
         d_llm: int = 768,
         lambda_mse: float = 0.1,
+        lambda_verify: float = 0.1,
         n_semantic_blocks: int = 1,
         pretrain_dim: int = 768,
     ):
@@ -217,6 +256,7 @@ class CAKT(nn.Module):
         self.separate_qa = separate_qa
         self.emb_type = emb_type
         self.lambda_mse = lambda_mse
+        self.lambda_verify = lambda_verify
 
         embed_l = d_model
 
@@ -280,6 +320,11 @@ class CAKT(nn.Module):
             nn.Dropout(dropout),
             nn.Linear(256, 1),
         )
+
+        # ── 答案修正门控模块（训练时激活） ─────────────────────────────
+        self.answer_correction = AnswerCorrectionGate(d_model, dropout)
+        # 轻量验证头：修正后的状态 ⊕ 题目嵌入 → 验证预测
+        self.verify_head = nn.Linear(d_model + embed_l, 1)
 
         # ── 辅助任务投影层：H^A_t → ê_ks_{t+1} ──────────────────────────
         self.aux_proj = nn.Linear(d_model, self.d_llm)
@@ -403,6 +448,30 @@ class CAKT(nn.Module):
         logits = self.out(concat_q).squeeze(-1)           # (B, T)
         preds = torch.sigmoid(logits)
 
+        # ── Step 5b: 答案误差修正验证（仅训练阶段）────────────────────────
+        if self.training:
+            # error_t = r_{t+1} − ŷ_t，有监督的误差信号；detach 防止梯度回传到主链路
+            error_t  = target[:, 1:].float() - preds[:, :-1].detach()       # (B, T-1)
+            fused_v  = self.answer_correction(fused[:, :-1, :], error_t)    # (B, T-1, d_model)
+            # 被预测的题目是 q_{t+1}，因此拼接 q_embed[:, 1:, :]
+            concat_v = torch.cat([fused_v, q_embed[:, 1:, :]], dim=-1)      # (B, T-1, 2·d_model)
+            preds_v  = torch.sigmoid(self.verify_head(concat_v)).squeeze(-1) # (B, T-1)
+            if masks is not None:
+                valid = masks.bool()
+                n_valid = valid.sum()
+                if n_valid > 0:
+                    verify_loss = F.binary_cross_entropy(
+                        preds_v[valid], target[:, 1:].float()[valid]
+                    )
+                else:
+                    verify_loss = torch.tensor(0.0, device=preds.device)
+            else:
+                verify_loss = F.binary_cross_entropy(
+                    preds_v, target[:, 1:].float()
+                )
+        else:
+            verify_loss = torch.tensor(0.0, device=preds.device)
+
         # ── Step 6: 辅助任务 — 下一语义状态预测 L_MSE ────────────────────
         # 用 H^A_t 预测 e_ks_{t+1}，对齐行为隐空间与 LLM 语义空间
         # masks (B, T-1): 1=有效位, 0=padding，仅对有效位计算 MSE
@@ -411,5 +480,5 @@ class CAKT(nn.Module):
         mse_loss = self._masked_mse(aux_pred, aux_target, masks)
         # mse_loss = F.mse_loss(aux_pred, aux_target)
         if qtest:
-            return preds, c_reg_loss, mse_loss, concat_q
-        return preds, c_reg_loss, mse_loss
+            return preds, c_reg_loss, mse_loss, verify_loss, concat_q
+        return preds, c_reg_loss, mse_loss, verify_loss

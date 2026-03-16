@@ -287,9 +287,9 @@ def model_forward(model, data, rel=None):
         ys.append(y[:,1:])
         preloss.append(loss)
     elif model_name == "cakt":
-        y, reg_loss, mse_loss = model(cc.long(), cr.long(), cs.long(), cq.long(), masks=m)
+        y, reg_loss, mse_loss, verify_loss = model(cc.long(), cr.long(), cs.long(), cq.long(), masks=m)
         ys.append(y[:,1:])
-        preloss.append(reg_loss + model.lambda_mse * mse_loss)
+        preloss.append(reg_loss + model.lambda_mse * mse_loss + model.lambda_verify * verify_loss)
     elif model_name == "cdkt":
         y, mse_loss = model(c.long(), r.long(), s.long(), masks=m)
         y = (y * one_hot(cshft.long(), model.num_c)).sum(-1)
