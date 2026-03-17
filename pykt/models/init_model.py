@@ -146,7 +146,7 @@ def init_model(model_name, model_config, data_config, emb_type):
     elif model_name == "mykt":
         model = Mykt(data_config["num_c"], data_config["num_q"], **model_config, emb_type=emb_type, ta_emb_path=data_config["ta_emb_path"], ks_emb_path=data_config["ks_emb_path"]).to(device)
     elif model_name == "cakt":
-        model = CAKT(data_config["num_c"], data_config["num_q"], **model_config, emb_type=emb_type, ks_emb_path=data_config["ks_emb_path"]).to(device)
+        model = CAKT(data_config["num_c"], data_config["num_q"], **model_config, emb_type=emb_type, ta_emb_path=data_config["ta_emb_path"], ks_emb_path=data_config["ks_emb_path"]).to(device)
     elif model_name == "cdkt":
         model = CDKT(data_config["num_c"], **model_config, emb_type=emb_type, ks_emb_path=data_config["ks_emb_path"]).to(device)
     elif model_name == "codedkt":

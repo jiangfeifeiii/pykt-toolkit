@@ -217,8 +217,11 @@ class CAKT(nn.Module):
         separate_qa     作答向量是否与题目向量分开嵌入
         l2              Rasch 难度参数 L2 正则系数
         emb_type        嵌入类型（默认 "qid"）
-        ks_emb_path     LLM 语义向量 .npy 文件路径（冻结嵌入表）
-        d_llm           LLM 原始特征维度（ks_emb_path 为空时使用）
+        ks_emb_path     knowledge_state LLM 向量 .npy 路径（冻结嵌入表）
+        ta_emb_path     technical_analysis LLM 向量 .npy 路径（冻结嵌入表）
+                        与 ks_emb_path 结构相同（sid → embedding），通过 s 索引；
+                        提供后投影到 d_model 并直接加到 qa_embed（Early Fusion）。
+        d_llm           LLM 原始特征维度（ks_emb_path/ta_emb_path 为空时使用）
         lambda_mse      辅助 MSE Loss 权重 λ
         n_semantic_blocks  语义记忆库 Transformer 块数
     """
@@ -239,6 +242,7 @@ class CAKT(nn.Module):
         emb_type: str = "qid",
         emb_path: str = "",
         ks_emb_path: str = "",
+        ta_emb_path: str = "",
         d_llm: int = 768,
         lambda_mse: float = 0.1,
         lambda_verify: float = 0.1,
@@ -297,6 +301,22 @@ class CAKT(nn.Module):
             self.ks_emb = nn.Embedding.from_pretrained(ks_weight, freeze=True)
         else:
             self.d_llm = d_llm
+
+        # ── Branch 1 输入增强: 技术分析嵌入 Simple Add → qa_embed ─────
+        # ta_emb 与 ks_emb 结构相同（sid → embedding），共用 s 索引。
+        # 将 ta_emb 投影到 d_model 后，直接与 qa_embed 做逐元素相加：
+        # qa_embed += ta_proj(ta_vec)
+        self.ta_emb_path = ta_emb_path
+        if self.ta_emb_path:
+            ta_weight = np.load(self.ta_emb_path)
+            ta_weight = torch.from_numpy(ta_weight).float()
+            self.d_ta = ta_weight.shape[1]
+            self.ta_emb = nn.Embedding.from_pretrained(ta_weight, freeze=True)
+            self.ta_proj = nn.Linear(self.d_ta, d_model)
+        else:
+            self.d_ta = d_llm
+            self.ta_emb = None
+            self.ta_proj = None
 
         self.semantic_encoder = SemanticEncoder(
             d_llm=self.d_llm,
@@ -391,7 +411,8 @@ class CAKT(nn.Module):
         Args:
             q_data:   (B, T)  题目 ID 序列
             target:   (B, T)  作答结果 {0, 1} 序列
-            s:        (B, T)  提交记录 ID，用于检索冻结 LLM 语义向量（必须提供）
+            s:        (B, T)  提交记录 ID，同时用于检索 ks_emb（Branch 2）
+                              和 ta_emb（Early Fusion into qa_embed）
             pid_data: (B, T)  题目实例 ID（启用 Rasch 难度时必须提供）
             qtest:    bool    若为 True，额外返回中间融合表示（可解释性分析用）
 
@@ -429,6 +450,14 @@ class CAKT(nn.Module):
             c_reg_loss = (pid_embed ** 2.0).sum() * self.l2
         else:
             c_reg_loss = 0.0
+
+        # ── Step 1b: 技术分析 Simple Add → qa_embed ────────────────────
+        # ta_emb 与 ks_emb 共用同一 s 索引（sid → embedding）
+        # 直接逐元素相加：qa_embed += ta_proj
+        if self.ta_emb is not None:
+            ta_vec   = self.ta_emb(s)          # (B, T, d_ta), 冻结
+            ta_proj  = self.ta_proj(ta_vec)    # (B, T, d_model)
+            qa_embed = qa_embed + ta_proj
 
         # ── Step 2: Branch 1 — 行为编码 (AKT Backbone) ───────────────────
         # H_A: (B, T, d_model)
