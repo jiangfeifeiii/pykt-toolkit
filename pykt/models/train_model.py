@@ -1,7 +1,7 @@
 import os, sys
 import torch
 import torch.nn as nn
-from torch.nn.functional import one_hot, binary_cross_entropy, cross_entropy
+from torch.nn.functional import one_hot, binary_cross_entropy, cross_entropy, cosine_similarity
 from torch.nn.utils.clip_grad import clip_grad_norm_
 import numpy as np
 from .evaluate_model import evaluate
@@ -32,11 +32,15 @@ def cal_loss(model, ys, r, rshft, sm, preloss=[]):
         else:
             loss = loss1
     elif model_name in ["rekt"]:
-        # print("ys shape:", ys[0].shape)
-        # print("sm shape:", sm.shape)
         y = torch.masked_select(ys[0], sm)
         t = torch.masked_select(rshft, sm)
         loss = binary_cross_entropy(y.double(), t.double())
+        if len(ys) == 3:
+            # ys[1]: skill_states_all [B, T, d]，ys[2]: cm_embs_all [B, T, d_sllm]
+            proj_states = model.concept_align_proj(ys[1])          # [B, T, d_sllm]
+            cos_sim = cosine_similarity(proj_states, ys[2], dim=-1) # [B, T]
+            align_loss = (1 - cos_sim).masked_select(sm).mean()
+            loss = loss + model.lambda_align * align_loss
     
     elif model_name in ["ukt"]:
         y = torch.masked_select(ys[0], sm)
@@ -143,8 +147,12 @@ def model_forward(model, data, rel=None):
         y, y2, y3 = model(dcur, train=True)
         ys = [y[:,1:], y2, y3]
     elif model_name in ["rekt"]:
-        y = model(dcur, train=True)
-        ys = [y]
+        if model.sllm_emb_path:
+            y, skill_states, cm_embs = model(dcur, train=True)
+            ys = [y, skill_states, cm_embs]
+        else:
+            y = model(dcur, train=True)
+            ys = [y]
     elif model_name in ["ukt"]:
         if model.use_CL != 0 :
             y, sim, y2, y3, temp = model(dcur, train=True)
