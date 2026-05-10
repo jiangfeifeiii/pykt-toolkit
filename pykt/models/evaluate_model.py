@@ -109,7 +109,7 @@ def evaluate(model, test_loader, model_name, rel=None, save_path=""):
             elif model_name in ["simplekt","stablekt", "sparsekt", "cskt", "ukt", "hcgkt"]:
                 y = model(dcur)
                 y = y[:,1:]
-            elif model_name in ["rekt"]:
+            elif model_name in ["rekt", "grukt"]:
                 y = model(dcur)
             elif model_name in ["dkt", "dkt+"]:
                 y = model(c.long(), r.long())

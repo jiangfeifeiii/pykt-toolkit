@@ -51,7 +51,7 @@ def cal_loss(model, ys, r, rshft, sm, preloss=[]):
             loss1 = loss1 + model.cl_weight * loss2
         loss =loss1
 
-    elif model_name in ["rkt","dimkt","dkt", "dkt_forget", "dkvmn","deep_irt", "kqn", "sakt", "saint", "atkt", "atktfix", "gkt", "skvmn", "hawkes", "codedkt"]:
+    elif model_name in ["rkt","dimkt","dkt", "dkt_forget", "dkvmn","deep_irt", "kqn", "sakt", "saint", "atkt", "atktfix", "gkt", "skvmn", "hawkes", "codedkt", "grukt"]:
 
         y = torch.masked_select(ys[0], sm)
         t = torch.masked_select(rshft, sm)
@@ -153,6 +153,9 @@ def model_forward(model, data, rel=None):
         else:
             y = model(dcur, train=True)
             ys = [y]
+    elif model_name in ["grukt"]:
+        y = model(dcur, train=True)
+        ys = [y]
     elif model_name in ["ukt"]:
         if model.use_CL != 0 :
             y, sim, y2, y3, temp = model(dcur, train=True)

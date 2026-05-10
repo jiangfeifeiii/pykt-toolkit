@@ -32,6 +32,7 @@ from .dtransformer import DTransformer
 from .stablekt import stableKT
 from .extrakt import extraKT
 from .rekt import ReKT
+from .grukt import GRUKT
 from .cskt import CSKT
 from .lefokt_akt import LEFOKT_AKT
 from .ukt import UKT
@@ -124,6 +125,8 @@ def init_model(model_name, model_config, data_config, emb_type):
         model = simpleKT(data_config["num_c"], data_config["num_q"], **model_config, emb_type=emb_type, emb_path=data_config["emb_path"]).to(device)
     elif model_name == "rekt":
         model = ReKT(data_config["num_c"], data_config["num_q"], **model_config, emb_type=emb_type, code_emb_path=data_config["code_emb_path"], sllm_emb_path=data_config["sllm_emb_path"]).to(device)
+    elif model_name == "grukt":
+        model = GRUKT(data_config["num_c"], data_config["num_q"], **model_config, emb_type=emb_type).to(device)
     elif model_name == "stablekt":
         model = stableKT(data_config["num_c"], data_config["num_q"], **model_config, emb_type=emb_type, emb_path=data_config["emb_path"]).to(device)
     elif model_name == "dimkt":
