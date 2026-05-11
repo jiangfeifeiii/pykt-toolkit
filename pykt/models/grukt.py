@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import numpy as np
 
 
 class GRUKT(nn.Module):
@@ -25,6 +26,8 @@ class GRUKT(nn.Module):
         dropout,
         max_seq=200,
         emb_type="qid",
+        use_score_gate=False,
+        score_path="",
     ):
         super(GRUKT, self).__init__()
 
@@ -34,6 +37,7 @@ class GRUKT(nn.Module):
         self.emb_type = emb_type
         self.d = d
         self.max_seq = max_seq
+        self.use_score_gate = use_score_gate
 
         self.pro_embed = nn.Parameter(torch.rand(pro_max, d))
         self.skill_embed = nn.Parameter(torch.rand(skill_max, d))
@@ -59,10 +63,17 @@ class GRUKT(nn.Module):
 
         self.dropout = nn.Dropout(p=dropout)
 
+        if self.use_score_gate and score_path:
+            score_np = np.load(score_path)
+            self.register_buffer("score_table", torch.from_numpy(score_np).float())
+        else:
+            self.register_buffer("score_table", torch.zeros(1, dtype=torch.float))
+
     def forward(self, dcur, qtest=False, train=False):
         next_problem = dcur["shft_qseqs"].long()
         next_skill = dcur["shft_cseqs"].long()
         next_ans = dcur["shft_rseqs"].long()
+        next_submission = dcur["shft_sseqs"].long() if "shft_sseqs" in dcur else None
 
         device = next_problem.device
         batch = next_problem.shape[0]
@@ -117,6 +128,18 @@ class GRUKT(nn.Module):
             new_global = self.global_gru(x_t, global_state)
             new_pro = self.pro_gru(x_t, last_pro_state)
             new_skill = self.skill_gru(x_t, last_skill_state)
+
+            if self.use_score_gate:
+                fallback_score = next_ans[:, t].float() * 4.0 + 1.0  # AC->5, non-AC->1
+                if next_submission is not None and self.score_table.numel() > 1:
+                    sid_t = next_submission[:, t].clamp(min=0)
+                    sid_t = sid_t.clamp(max=self.score_table.shape[0] - 1)
+                    llm_score = self.score_table[sid_t]
+                    score = torch.where(llm_score > 0, llm_score, fallback_score)
+                else:
+                    score = fallback_score
+                alpha = (score / 5.0).unsqueeze(-1).clamp(0.0, 1.0)
+                new_skill = alpha * new_skill + (1.0 - alpha) * last_skill_state
 
             global_state = new_global
             pro_state[:, t] = new_pro
