@@ -69,6 +69,15 @@ class GRUKT(nn.Module):
         else:
             self.register_buffer("score_table", torch.zeros(1, dtype=torch.float))
 
+        if self.use_score_gate:
+            self.score_proj = nn.Sequential(
+                nn.Linear(2, d),
+                nn.ReLU(),
+                nn.Dropout(p=dropout),
+                nn.Linear(d, d),
+                nn.LayerNorm(d),
+            )
+
     def forward(self, dcur, qtest=False, train=False):
         next_problem = dcur["shft_qseqs"].long()
         next_skill = dcur["shft_cseqs"].long()
@@ -138,8 +147,11 @@ class GRUKT(nn.Module):
                     score = torch.where(llm_score > 0, llm_score, fallback_score)
                 else:
                     score = fallback_score
-                alpha = (score / 5.0).unsqueeze(-1).clamp(0.0, 1.0)
-                new_skill = alpha * new_skill + (1.0 - alpha) * last_skill_state
+                cmes = ((score - 1.0) / 4.0).unsqueeze(-1).clamp(0.0, 1.0)
+                signed_cmes = 2.0 * cmes - 1.0
+                score_feat = torch.cat([cmes, signed_cmes], dim=-1)
+                score_emb = self.score_proj(score_feat)
+                new_skill = cmes * new_skill + (1.0 - cmes) * last_skill_state
 
             global_state = new_global
             pro_state[:, t] = new_pro
