@@ -77,6 +77,11 @@ class GRUKT(nn.Module):
                 nn.Linear(d, d),
                 nn.LayerNorm(d),
             )
+            self.skill_score_update_proj = nn.Linear(2 * d, d)
+            self.score_update_gate = nn.Sequential(
+                nn.Linear(3 * d, d),
+                nn.Sigmoid(),
+            )
 
     def forward(self, dcur, qtest=False, train=False):
         next_problem = dcur["shft_qseqs"].long()
@@ -136,7 +141,6 @@ class GRUKT(nn.Module):
             x_t = self.dropout(next_X[:, t])
             new_global = self.global_gru(x_t, global_state)
             new_pro = self.pro_gru(x_t, last_pro_state)
-            new_skill = self.skill_gru(x_t, last_skill_state)
 
             if self.use_score_gate:
                 fallback_score = next_ans[:, t].float() * 4.0 + 1.0  # AC->5, non-AC->1
@@ -151,7 +155,16 @@ class GRUKT(nn.Module):
                 signed_cmes = 2.0 * cmes - 1.0
                 score_feat = torch.cat([cmes, signed_cmes], dim=-1)
                 score_emb = self.score_proj(score_feat)
-                new_skill = cmes * new_skill + (1.0 - cmes) * last_skill_state
+                skill_update_input = self.skill_score_update_proj(
+                    torch.cat([x_t, score_emb], dim=-1)
+                )
+                candidate_skill = self.skill_gru(skill_update_input, last_skill_state)
+                gate = self.score_update_gate(
+                    torch.cat([last_skill_state, candidate_skill, score_emb], dim=-1)
+                )
+                new_skill = gate * candidate_skill + (1.0 - gate) * last_skill_state
+            else:
+                new_skill = self.skill_gru(x_t, last_skill_state)
 
             global_state = new_global
             pro_state[:, t] = new_pro
