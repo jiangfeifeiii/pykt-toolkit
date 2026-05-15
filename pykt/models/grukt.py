@@ -27,6 +27,7 @@ class GRUKT(nn.Module):
         max_seq=200,
         emb_type="qid",
         use_score_gate=False,
+        use_score_residual=False,
         score_path="",
     ):
         super(GRUKT, self).__init__()
@@ -38,6 +39,7 @@ class GRUKT(nn.Module):
         self.d = d
         self.max_seq = max_seq
         self.use_score_gate = use_score_gate
+        self.use_score_residual = use_score_residual
 
         self.pro_embed = nn.Parameter(torch.rand(pro_max, d))
         self.skill_embed = nn.Parameter(torch.rand(skill_max, d))
@@ -70,8 +72,10 @@ class GRUKT(nn.Module):
             self.register_buffer("score_table", torch.zeros(1, dtype=torch.float))
 
         if self.use_score_gate:
+            # Exp2: score_residual 使输入从 2 维扩展到 3 维 [cmes, signed_cmes, score_residual]
+            score_input_dim = 3 if use_score_residual else 2
             self.score_proj = nn.Sequential(
-                nn.Linear(2, d),
+                nn.Linear(score_input_dim, d),
                 nn.ReLU(),
                 nn.Dropout(p=dropout),
                 nn.Linear(d, d),
@@ -153,7 +157,14 @@ class GRUKT(nn.Module):
                     score = fallback_score
                 cmes = ((score - 1.0) / 4.0).unsqueeze(-1).clamp(0.0, 1.0)
                 signed_cmes = 2.0 * cmes - 1.0
-                score_feat = torch.cat([cmes, signed_cmes], dim=-1)
+                # Exp2: 将 score_residual = cmes - binary_correctness 拼入特征
+                # 刻画 LLM score 相对于二元正确性的偏移（细粒度掌握证据）
+                if self.use_score_residual:
+                    ans_float = next_ans[:, t].float().unsqueeze(-1)
+                    score_residual = cmes - ans_float
+                    score_feat = torch.cat([cmes, signed_cmes, score_residual], dim=-1)
+                else:
+                    score_feat = torch.cat([cmes, signed_cmes], dim=-1)
                 score_emb = self.score_proj(score_feat)
                 skill_update_input = self.skill_score_update_proj(
                     torch.cat([x_t, score_emb], dim=-1)
