@@ -4,6 +4,76 @@ import torch.nn.functional as F
 import numpy as np
 
 
+class CodeDenoiseGate(nn.Module):
+    """Pro-branch only, state-level denoising gate (Coda-style).
+
+    Controls how much of the raw GRU update is accepted for the pro branch,
+    conditioned on the CodeBERT embedding of the current submission and,
+    optionally, its signal_type (weak / normal).
+
+    Only applied to the pro (problem) branch.
+    Does NOT touch the skill/concept branch or the global branch.
+
+    signal_type values (4-class interface for future extensibility):
+        0 = core      (v1: not generated)
+        1 = weak      (sim_prev > tau_weak_high)
+        2 = normal    (default)
+        3 = unwanted  (v1: not generated)
+
+    Gate formula:
+        gate = sigmoid(MLP_gate(z_t))   # scalar gate, shape [B, 1]
+        h_pro_denoised = h_pro_prev + gate * (h_pro_raw - h_pro_prev)
+    """
+
+    def __init__(
+        self,
+        code_emb_dim: int,
+        d: int,
+        signal_emb_dim: int = 16,
+        use_signal_type: bool = True,
+        dropout: float = 0.1,
+    ):
+        super(CodeDenoiseGate, self).__init__()
+        self.use_signal_type = use_signal_type
+
+        # Project CodeBERT embedding down to model dimension d
+        self.code_proj = nn.Sequential(
+            nn.Linear(code_emb_dim, d),
+            nn.ReLU(),
+            nn.Dropout(p=dropout),
+            nn.LayerNorm(d),
+        )
+
+        # signal_type embedding (4 classes, kept as nn.Embedding so it is trainable)
+        self.signal_embedding = nn.Embedding(4, signal_emb_dim)
+
+        gate_input_dim = d + signal_emb_dim if use_signal_type else d
+
+        # MLP that produces a scalar gate value in (0, 1)
+        self.gate_mlp = nn.Sequential(
+            nn.Linear(gate_input_dim, d),
+            nn.ReLU(),
+            nn.Dropout(p=dropout),
+            nn.Linear(d, 1),
+            nn.Sigmoid(),
+        )
+
+    def forward(
+        self,
+        code_emb_t: torch.Tensor,   # [B, code_emb_dim]
+        signal_type_t: torch.Tensor, # [B]  long
+        h_pro_prev: torch.Tensor,    # [B, d]  last pro state (before this update)
+        h_pro_raw: torch.Tensor,     # [B, d]  raw pro_gru output
+    ) -> torch.Tensor:
+        """Return denoised pro state: h_prev + gate * (h_raw - h_prev)."""
+        z = self.code_proj(code_emb_t)          # [B, d]
+        if self.use_signal_type:
+            s = self.signal_embedding(signal_type_t)  # [B, signal_emb_dim]
+            z = torch.cat([z, s], dim=-1)        # [B, d + signal_emb_dim]
+        gate = self.gate_mlp(z)                  # [B, 1]
+        return h_pro_prev + gate * (h_pro_raw - h_pro_prev)
+
+
 class GRUKT(nn.Module):
     """GRU-Core Knowledge Tracing model.
 
@@ -29,6 +99,14 @@ class GRUKT(nn.Module):
         use_score_gate=False,
         use_score_residual=False,
         score_path="",
+        # ---- code denoising gate (pro branch only) ----
+        use_code_denoise_gate=False,
+        use_signal_type=True,
+        code_emb_path="",
+        signal_type_path="",
+        code_emb_dim=768,
+        signal_emb_dim=16,
+        freeze_backbone=False,
     ):
         super(GRUKT, self).__init__()
 
@@ -40,6 +118,9 @@ class GRUKT(nn.Module):
         self.max_seq = max_seq
         self.use_score_gate = use_score_gate
         self.use_score_residual = use_score_residual
+        self.use_code_denoise_gate = use_code_denoise_gate
+        self.use_signal_type = use_signal_type
+        self.freeze_backbone = freeze_backbone
 
         self.pro_embed = nn.Parameter(torch.rand(pro_max, d))
         self.skill_embed = nn.Parameter(torch.rand(skill_max, d))
@@ -86,6 +167,48 @@ class GRUKT(nn.Module):
                 nn.Linear(3 * d, d),
                 nn.Sigmoid(),
             )
+
+        # ------------------------------------------------------------------ #
+        #  Code denoising gate — pro branch only, offline CodeBERT features  #
+        # ------------------------------------------------------------------ #
+        # Buffers and gate module are only created when use_code_denoise_gate=True,
+        # so old checkpoints (without gate) can be loaded without spurious warnings.
+        if self.use_code_denoise_gate:
+            if code_emb_path:
+                code_np = np.load(code_emb_path)
+                self.register_buffer("code_emb_table", torch.from_numpy(code_np).float())
+            else:
+                # placeholder: zero embedding for all sids
+                self.register_buffer(
+                    "code_emb_table", torch.zeros(1, code_emb_dim, dtype=torch.float)
+                )
+
+            if signal_type_path:
+                sig_np = np.load(signal_type_path)
+                self.register_buffer("signal_type_table", torch.from_numpy(sig_np).long())
+            else:
+                # placeholder: numel()==1 triggers fallback to normal(2) in forward
+                self.register_buffer(
+                    "signal_type_table", torch.zeros(1, dtype=torch.long)
+                )
+
+        if self.use_code_denoise_gate:
+            self.code_denoise_gate = CodeDenoiseGate(
+                code_emb_dim=code_emb_dim,
+                d=d,
+                signal_emb_dim=signal_emb_dim,
+                use_signal_type=use_signal_type,
+                dropout=dropout,
+            )
+
+        # ------------------------------------------------------------------ #
+        #  Ablation: freeze backbone, only train code gate parameters         #
+        # ------------------------------------------------------------------ #
+        if freeze_backbone and self.use_code_denoise_gate:
+            for p in self.parameters():
+                p.requires_grad_(False)
+            for p in self.code_denoise_gate.parameters():
+                p.requires_grad_(True)
 
     def forward(self, dcur, qtest=False, train=False):
         next_problem = dcur["shft_qseqs"].long()
@@ -145,6 +268,31 @@ class GRUKT(nn.Module):
             x_t = self.dropout(next_X[:, t])
             new_global = self.global_gru(x_t, global_state)
             new_pro = self.pro_gru(x_t, last_pro_state)
+
+            # ---- code denoising gate: pro branch only, no info leak ----
+            # Applied after pro_gru raw update, before writing to pro_state.
+            # Uses offline CodeBERT embedding and signal_type (weak/normal)
+            # to control how much of the raw state update is accepted.
+            # Does NOT affect skill branch, global branch, or prediction head.
+            if self.use_code_denoise_gate and next_submission is not None:
+                sid_t = next_submission[:, t].clamp(min=0)
+
+                sid_code = sid_t.clamp(max=self.code_emb_table.shape[0] - 1)
+                code_emb_t = self.code_emb_table[sid_code]  # [B, code_emb_dim]
+
+                if self.signal_type_table.numel() > 1:
+                    sid_sig = sid_t.clamp(max=self.signal_type_table.shape[0] - 1)
+                    signal_type_t = self.signal_type_table[sid_sig]   # [B]
+                else:
+                    # fallback: treat all as normal (2)
+                    signal_type_t = torch.full_like(sid_t, fill_value=2)
+
+                new_pro = self.code_denoise_gate(
+                    code_emb_t=code_emb_t,
+                    signal_type_t=signal_type_t,
+                    h_pro_prev=last_pro_state,
+                    h_pro_raw=new_pro,
+                )
 
             if self.use_score_gate:
                 fallback_score = next_ans[:, t].float() * 4.0 + 1.0  # AC->5, non-AC->1

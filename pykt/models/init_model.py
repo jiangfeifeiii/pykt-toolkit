@@ -132,6 +132,8 @@ def init_model(model_name, model_config, data_config, emb_type):
             **model_config,
             emb_type=emb_type,
             score_path=data_config.get("score_path", ""),
+            code_emb_path=data_config.get("code_emb_path", ""),
+            signal_type_path=data_config.get("signal_type_path", ""),
         ).to(device)
     elif model_name == "stablekt":
         model = stableKT(data_config["num_c"], data_config["num_q"], **model_config, emb_type=emb_type, emb_path=data_config["emb_path"]).to(device)
